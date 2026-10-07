@@ -1,0 +1,7 @@
+node_modules/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/sources/*.pdf
+data/sources/*.part
+data/sources/index.json

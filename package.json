@@ -1,0 +1,21 @@
+{
+  "name": "upsc-prelims-simulator",
+  "version": "1.0.0",
+  "description": "UPSC CSE Prelims 2007-2026 Mock & PYQ Simulator",
+  "main": "src/server.js",
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/server.js",
+    "import": "node scripts/run-import.js",
+    "fetch-sources": "node scripts/fetch-sources.js",
+    "seed": "node scripts/seed.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "express": "^5.2.1",
+    "pdfjs-dist": "^5.7.284"
+  }
+}
