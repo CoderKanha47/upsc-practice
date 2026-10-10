@@ -1,20 +1,29 @@
 import { get, post } from '../api.js';
 import { h, mount, loadingBox, fmtDuration, toast } from '../dom.js';
 import { navigate } from '../router.js';
+import { getExamMeta } from '../exam-state.js';
 
-export default async function selective(view) {
+export default async function selective(view, params, query) {
   mount(view, loadingBox());
+  const examId = query?.exam;
+  const examMeta = getExamMeta(examId);
   let opts;
   try {
-    opts = await get('/api/selective/options');
+    opts = await get(`/api/selective/options?exam=${encodeURIComponent(examId)}`);
   } catch (err) {
     mount(view, h('div', { class: 'empty' }, h('strong', { text: 'Cannot load practice options' }), h('div', { text: err.message })));
     return;
   }
 
-  const subjectNames = [...new Set(Object.values(opts.subjects || {}).flat())];
+  const paperIds = new Set((opts.papers || []).map((p) => p.id));
+  const subjectNames = [...new Set(
+    Object.entries(opts.subjects || {})
+      .filter(([paper]) => paperIds.has(paper))
+      .flatMap(([, list]) => list),
+  )];
 
   const state = {
+    exam: examId,
     papers: [],
     subjects: [],
     topics: [],
@@ -29,6 +38,7 @@ export default async function selective(view) {
   };
 
   const body = () => ({
+    exam: state.exam,
     papers: state.papers,
     subjects: state.subjects,
     topics: state.topics,
@@ -130,7 +140,7 @@ export default async function selective(view) {
         ),
       );
       startBtn.disabled = p.actual === 0;
-      if (p.actual === 0) previewSlot.appendChild(h('div', { class: 'notice warn', style: { marginTop: '.6rem' }, text: 'No questions match these filters. The seeded practice bank has GS1/CSAT questions across subjects — deselect some filters.' }));
+      if (p.actual === 0) previewSlot.appendChild(h('div', { class: 'notice warn', style: { marginTop: '.6rem' }, text: 'No questions match these filters. Deselect some filters or import more questions (Admin → Import).' }));
     } catch (err) {
       previewSlot.innerHTML = '';
       previewSlot.appendChild(h('div', { class: 'notice warn', text: err.message }));
@@ -173,7 +183,7 @@ export default async function selective(view) {
     'div',
     { class: 'check-grid' },
     ...[
-      ['includeOfficial', 'Official UPSC PYQs', opts.counts.official],
+      ['includeOfficial', 'Official PYQs', opts.counts.official],
       ['includeAiGenerated', 'AI-generated practice questions', opts.counts.aiGenerated],
       ['includeCustom', 'Custom imported questions', opts.counts.custom],
     ].map(([key, label, count]) => {
@@ -201,7 +211,7 @@ export default async function selective(view) {
     h('div', { class: 'row-between', style: { marginBottom: '1rem' } },
       h('div', {},
         h('h1', { text: 'Selective Practice' }),
-        h('div', { class: 'muted', text: 'Always available. The timer is calculated from question difficulty, type and a per-question buffer.' }),
+        h('div', { class: 'muted', text: `${examMeta?.name || 'Exam'} · Always available. The timer is calculated from question difficulty, type and a per-question buffer.` }),
       ),
       h('span', { class: 'badge badge-good', text: 'Unlocked' }),
     ),
@@ -210,10 +220,7 @@ export default async function selective(view) {
       h('div', { class: 'card' },
         h('div', { class: 'card-title' }, h('h2', { text: 'Scope' })),
         h('label', { class: 'field' }, h('span', { text: 'Paper' }), checkGrid(
-          [
-            { value: 'GS1', label: 'GS Paper I', count: opts.counts.GS1 },
-            { value: 'CSAT', label: 'CSAT', count: opts.counts.CSAT },
-          ],
+          (opts.papers || []).map((p) => ({ value: p.id, label: `${p.shortTitle}${p.sectional?.enabled ? ' (sectional)' : ''}`, count: opts.counts[p.id] })),
           'papers',
         )),
         h('div', { class: 'field-label', text: 'Subject' }),

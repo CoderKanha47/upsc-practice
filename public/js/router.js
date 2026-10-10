@@ -1,3 +1,5 @@
+import { currentExam, setExam } from './exam-state.js';
+
 const routes = [];
 
 export function register(pattern, handler) {
@@ -27,6 +29,10 @@ async function dispatch() {
   const raw = location.hash.replace(/^#/, '') || '/';
   const [pathname, search] = raw.split('?');
   const query = Object.fromEntries(new URLSearchParams(search || ''));
+  // Shared links with ?exam= override the stored preference; otherwise the
+  // stored exam is injected so every view sees a concrete exam id.
+  if (query.exam) setExam(query.exam);
+  else query.exam = currentExam();
   const segs = pathname.split('/').filter(Boolean);
 
   for (const route of routes) {
@@ -76,4 +82,9 @@ export function startRouter() {
   dispatch();
 }
 
-export default { register, navigate, startRouter };
+/** Re-run the current route (e.g. after the exam switch changes). */
+export function redispatch() {
+  dispatch();
+}
+
+export default { register, navigate, startRouter, redispatch };

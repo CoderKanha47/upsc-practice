@@ -42,6 +42,10 @@ export function masteryOverview(filters = {}) {
     clauses.push('q.paper = ?');
     params.push(filters.paper);
   }
+  if (filters.exam) {
+    clauses.push('q.exam = ?');
+    params.push(filters.exam);
+  }
   const rows = db
     .prepare(
       `SELECT q.id, q.estimated_time_seconds, s.attempt_count, s.correct_count,

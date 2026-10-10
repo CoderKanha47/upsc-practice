@@ -1,5 +1,6 @@
 import { get, post, patch, del, setAdminToken, getAdminToken } from '../api.js';
 import { h, mount, loadingBox, fmtDate, toast, confirmDialog, badgeForState, badgeForSourceType } from '../dom.js';
+import { currentExam, examConfig } from '../exam-state.js';
 
 const METADATA_FIELDS = [
   ['year', 'Year'], ['paper', 'Paper'], ['question_number', 'Question #'],
@@ -180,6 +181,9 @@ function renderOverview(stats, body) {
 
 /* ---------------------------------------------------------------- import */
 function renderImport(body) {
+  const allPapers = examConfig()?.papers || [];
+  const exams = examConfig()?.exams || [];
+
   const formatSel = h('select', {},
     h('option', { value: 'json' }, 'JSON (canonical questions + optional answer key)'),
     h('option', { value: 'text' }, 'Raw text (extracted from PDF/OCR)'),
@@ -188,14 +192,39 @@ function renderImport(body) {
   const fileInput = h('input', { type: 'file', accept: '.json,.txt,.csv,.md' });
   const ta = h('textarea', { placeholder: '{\n  "year": 2024,\n  "paper": "GS1",\n  "questions": [ { "question_number": 1, "question_text": "…", "options": ["…","…","…","…"], "correct_answer": "B" } ]\n}' });
   const yearInput = h('input', { type: 'number', placeholder: 'year (text imports)' });
-  const paperSel = h('select', {}, h('option', { value: 'GS1' }, 'GS1'), h('option', { value: 'CSAT' }, 'CSAT'));
+  const examSel = h('select', {},
+    ...exams.map((e) => h('option', { value: e.id, selected: e.id === currentExam() ? true : null }, e.name)),
+  );
+  const paperSel = h('select', {});
+  const tierSel = h('select', {},
+    h('option', { value: '' }, '— none —'),
+    h('option', { value: 'TIER_I' }, 'Tier-I'),
+    h('option', { value: 'TIER_II_P1' }, 'Tier-II Paper-I'),
+    h('option', { value: 'TIER_II_P2' }, 'Tier-II Paper-II (Statistics)'),
+    h('option', { value: 'TIER_II_P3' }, 'Tier-II Paper-III (AAO)'),
+  );
+  const shiftSel = h('select', {},
+    h('option', { value: '' }, '— none —'),
+    h('option', { value: 'SHIFT_1' }, 'Shift 1'),
+    h('option', { value: 'SHIFT_2' }, 'Shift 2'),
+    h('option', { value: 'SHIFT_3' }, 'Shift 3'),
+    h('option', { value: 'SHIFT_4' }, 'Shift 4'),
+  );
   const filenameInput = h('input', { type: 'text', placeholder: 'filename (optional)' });
   const sourceSel = h('select', {},
     h('option', { value: 'CUSTOM' }, 'Custom (not official)'),
-    h('option', { value: 'OFFICIAL_PYQ' }, 'Official UPSC PYQ (verified paper)'),
+    h('option', { value: 'OFFICIAL_PYQ' }, 'Official PYQ (verified paper)'),
     h('option', { value: 'AI_GENERATED' }, 'AI generated (always labelled)'),
   );
   const resultSlot = h('div', {});
+
+  const syncPapers = () => {
+    const list = allPapers.filter((p) => p.exam === examSel.value);
+    paperSel.innerHTML = '';
+    for (const p of list) paperSel.appendChild(h('option', { value: p.id }, `${p.id} — ${p.shortTitle}`));
+  };
+  examSel.addEventListener('change', syncPapers);
+  syncPapers();
 
   fileInput.addEventListener('change', async () => {
     const f = fileInput.files?.[0];
@@ -218,6 +247,9 @@ function renderImport(body) {
           filename: filenameInput.value.trim() || fileInput.files?.[0]?.name || 'paste',
           year: yearInput.value ? Number(yearInput.value) : null,
           paper: paperSel.value,
+          exam: examSel.value,
+          tier: tierSel.value || null,
+          shift: shiftSel.value || null,
           sourceType: sourceSel.value,
         },
       });
@@ -247,11 +279,18 @@ function renderImport(body) {
         h('label', { class: 'field' }, h('span', { text: 'Load file' }), fileInput),
         h('label', { class: 'field' }, h('span', { text: 'Or paste content' }), ta),
         h('div', { class: 'grid grid-2' },
-          h('label', { class: 'field' }, h('span', { text: 'Year' }), yearInput),
+          h('label', { class: 'field' }, h('span', { text: 'Exam' }), examSel),
           h('label', { class: 'field' }, h('span', { text: 'Paper' }), paperSel),
         ),
         h('div', { class: 'grid grid-2' },
+          h('label', { class: 'field' }, h('span', { text: 'Year' }), yearInput),
+          h('label', { class: 'field' }, h('span', { text: 'Tier' }), tierSel),
+        ),
+        h('div', { class: 'grid grid-2' },
+          h('label', { class: 'field' }, h('span', { text: 'Shift' }), shiftSel),
           h('label', { class: 'field' }, h('span', { text: 'Filename' }), filenameInput),
+        ),
+        h('div', { class: 'grid grid-2' },
           h('label', { class: 'field' }, h('span', { text: 'Source type' }), sourceSel),
         ),
         h('button', { class: 'btn btn-primary', onClick: doImport }, 'Run import'),
@@ -260,7 +299,8 @@ function renderImport(body) {
       h('div', { class: 'card' },
         h('div', { class: 'card-title' }, h('h2', { text: 'Format guide' })),
         h('div', { class: 'notice' },
-          h('div', { html: '<b>JSON</b> — <code>{ year, paper, source_type, questions: [{ question_number, question_text, options: ["..",".."] or [{key,text}], correct_answer, subject, topic, difficulty, question_type, explanation, passage, source }] }</code>' }),
+          h('div', { html: '<b>JSON</b> — <code>{ year, paper, exam, tier, shift, source_type, questions: [{ question_number, question_text, options: ["..",".."] or [{key,text}], correct_answer, subject, topic, difficulty, question_type, explanation, passage, source }] }</code>' }),
+          h('div', { class: 'muted', style: { fontSize: '.8rem', marginTop: '.4rem' }, text: 'Exam, paper, tier and shift can come from the form fields above or from each row of the JSON. SSC questions must use SSC paper ids (SSC_T1, SSC_T2_P1…).' }),
         ),
         h('div', { class: 'notice', style: { marginTop: '.6rem' }, text: 'Text — pasted OCR of a paper; always imports as REVIEW_REQUIRED until verified.' }),
         h('div', { class: 'notice', style: { marginTop: '.6rem' }, text: 'Answer key — lines like "1. B  2. D" or "1:B, 2:D"; updates existing questions by year+paper+number.' }),

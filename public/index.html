@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
-  <title>UPSC CSE Prelims Simulator</title>
+  <title>Prelims Practice Simulator — UPSC CSE &amp; SSC CGL</title>
   <script>
     (function () {
       var t = null;
@@ -22,10 +22,10 @@
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="#/">
-        <span class="brand-mark">U</span>
+        <span class="brand-mark" id="brandMark">U</span>
         <span class="brand-text">
-          <strong>UPSC CSE Prelims Simulator</strong>
-          <small>PYQ practice engine · 2007–2026</small>
+          <strong id="brandName">Prelims Practice Simulator</strong>
+          <small id="brandSub">UPSC CSE · SSC CGL</small>
         </span>
       </a>
       <nav class="nav" id="nav">
@@ -36,6 +36,13 @@
         <a href="#/analytics" data-route="analytics">Analytics</a>
         <a href="#/admin" data-route="admin">Admin</a>
       </nav>
+      <label class="exam-switch" title="Switch exam">
+        <span class="visually-hidden">Exam</span>
+        <select id="examSwitch" aria-label="Switch exam">
+          <option value="UPSC_CSE_PRELIMS">UPSC CSE Prelims</option>
+          <option value="SSC_CGL">SSC CGL</option>
+        </select>
+      </label>
       <button class="theme-toggle" id="themeToggle" type="button" title="Switch theme" aria-label="Switch to dark theme">
         <svg class="icon-moon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -49,7 +56,7 @@
 
   <footer class="footer">
     <div class="footer-inner">
-      <span>Personal UPSC Prelims practice system · Exam rules are configuration-driven</span>
+      <span>Personal prelims practice system · UPSC CSE &amp; SSC CGL · Exam rules are configuration-driven</span>
       <span class="muted">Official PYQs are imported and verified — never invented. AI-generated practice is always labelled.</span>
     </div>
   </footer>

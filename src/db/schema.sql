@@ -1,18 +1,23 @@
--- UPSC CSE Prelims Simulator — database schema
+-- Exam Practice Simulator — database schema (multi-exam)
 -- Applied idempotently by src/db/database.js (SQLite via node:sqlite).
+-- Existing databases are upgraded in-place by the migrations in database.js
+-- (PRAGMA user_version). Paper ids are globally unique across exams:
+--   UPSC: GS1, CSAT   ·   SSC CGL: SSC_T1, SSC_T2_P1, SSC_T2_P2, SSC_T2_P3
 
 PRAGMA foreign_keys = ON;
 
 -- ---------------------------------------------------------------------------
 -- QUESTIONS
 -- A question row is never silently rewritten once VERIFIED (enforced in the
--- admin service, see src/services/adminService.js).
+-- admin service, see src/services/questionService.js).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS questions (
   id                     TEXT PRIMARY KEY,
   year                   INTEGER,
-  exam                   TEXT NOT NULL DEFAULT 'CSE_PRELIMS',
-  paper                  TEXT NOT NULL CHECK (paper IN ('GS1', 'CSAT')),
+  exam                   TEXT NOT NULL DEFAULT 'UPSC_CSE_PRELIMS',
+  paper                  TEXT NOT NULL,
+  tier                   TEXT,
+  shift                  TEXT,
   question_number        INTEGER,
   question_text          TEXT NOT NULL,
   passage                TEXT,
@@ -45,11 +50,13 @@ CREATE TABLE IF NOT EXISTS questions (
   updated_at             INTEGER NOT NULL
 );
 
--- Official PYQs are uniquely identified by year + paper + question number.
+-- Official PYQs are uniquely identified by year + paper + question number
+-- (plus shift for SSC shift-wise papers — see dupKeyFor in questionService).
 CREATE UNIQUE INDEX IF NOT EXISTS ux_questions_dup_key
   ON questions (dup_key)
   WHERE source_type = 'OFFICIAL_PYQ' AND is_duplicate = 0 AND dup_key IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS ix_questions_exam ON questions (exam);
 CREATE INDEX IF NOT EXISTS ix_questions_paper_year ON questions (paper, year);
 CREATE INDEX IF NOT EXISTS ix_questions_subject ON questions (subject);
 CREATE INDEX IF NOT EXISTS ix_questions_topic ON questions (topic);
@@ -66,6 +73,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
   filename        TEXT,
   format          TEXT,
   source_type     TEXT,
+  exam            TEXT,
   state           TEXT NOT NULL DEFAULT 'IMPORTED',
   total           INTEGER DEFAULT 0,
   inserted        INTEGER DEFAULT 0,
@@ -76,10 +84,14 @@ CREATE TABLE IF NOT EXISTS import_batches (
   created_at      INTEGER NOT NULL
 );
 
--- One row per (year, paper). Drives the PYQ explorer "DATA MISSING" states.
+-- One row per (year, paper). Paper ids are globally unique so (year, paper)
+-- remains a valid key across exams. Drives "DATA MISSING" states.
 CREATE TABLE IF NOT EXISTS paper_coverage (
   year            INTEGER NOT NULL,
   paper           TEXT NOT NULL,
+  exam            TEXT,
+  tier            TEXT,
+  shift           TEXT,
   status          TEXT NOT NULL DEFAULT 'DATA_MISSING',
   official_count  INTEGER DEFAULT 0,
   verified_count  INTEGER DEFAULT 0,
@@ -97,6 +109,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
   id                 TEXT PRIMARY KEY,
   mode               TEXT NOT NULL,          -- FULL_EXACT | FULL_MIXED | SELECTIVE | PYQ_PRACTICE
   kind_label         TEXT NOT NULL,          -- EXACT PYQ PAPER | MIXED PYQ PAPER | SELECTIVE PRACTICE
+  exam               TEXT,
   paper              TEXT NOT NULL,
   title              TEXT NOT NULL,
   status             TEXT NOT NULL DEFAULT 'IN_PROGRESS',
@@ -113,6 +126,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
   unattempted        INTEGER DEFAULT 0,
   marks_obtained     REAL DEFAULT 0,
   negative_marks     REAL DEFAULT 0,
+  total_marks        REAL,
   accuracy           REAL DEFAULT 0,
   time_used_seconds  REAL DEFAULT 0,
   created_at         INTEGER NOT NULL
@@ -120,6 +134,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
 
 CREATE INDEX IF NOT EXISTS ix_sessions_status ON test_sessions (status);
 CREATE INDEX IF NOT EXISTS ix_sessions_started ON test_sessions (started_at);
+CREATE INDEX IF NOT EXISTS ix_sessions_exam ON test_sessions (exam);
 
 CREATE TABLE IF NOT EXISTS session_answers (
   session_id          TEXT NOT NULL REFERENCES test_sessions (id) ON DELETE CASCADE,

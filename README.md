@@ -1,10 +1,18 @@
-# UPSC CSE Prelims Simulator (2007–2026)
+# Prelims Practice Simulator — UPSC CSE & SSC CGL
 
-A personal mock-test and Previous Year Question (PYQ) practice system for the
-UPSC Civil Services Preliminary Examination: **GS Paper I** and **CSAT** as two
-separate papers, with a Sunday-only full-paper simulation, always-unlocked
-selective practice, a PYQ explorer, accurate scoring, analytics/mastery
-tracking, an import pipeline and a data-validation admin console.
+A personal mock-test and Previous Year Question (PYQ) practice system for two
+independent exam systems, switchable from the topbar:
+
+- **UPSC CSE Prelims** — GS Paper I and CSAT, Sunday-only full-paper
+  simulation (2007–2026).
+- **SSC CGL** — Tier-I (100 Q / 60 min / 200 marks, **sectional timers with
+  auto-lock**), Tier-II Paper-I session-I subjects, Paper-II Statistics and
+  Paper-III AAO (2006–2026).
+
+Both exams share always-unlocked selective practice, a PYQ explorer, accurate
+scoring, analytics/mastery tracking, an import pipeline and a data-validation
+admin console. Exam rules live in one config file; the database, sessions,
+timers and analytics are exam-scoped throughout.
 
 No accounts, no cloud, no build step — a Node.js server + SQLite + a vanilla
 ES-module SPA, running locally at `http://127.0.0.1:3456`.
@@ -15,8 +23,9 @@ ES-module SPA, running locally at `http://127.0.0.1:3456`.
 
 | Rule | How it is enforced |
 | --- | --- |
-| **Official PYQs are never invented** | Un-imported papers show `DATA_MISSING · 0/N`. The server returns `409 DATA_MISSING` instead of starting a fake paper; mixed papers draw only from imported official questions. |
-| **AI-generated questions are always labelled** | Every question carries `source_type` (`OFFICIAL_PYQ` / `AI_GENERATED` / `CUSTOM`) and a badge is rendered everywhere it appears. The seeded bank of 63 practice questions is labelled `AI GENERATED`. |
+| **Official PYQs are never invented** | Un-imported papers show `DATA_MISSING · 0/N`. The server returns `409 DATA_MISSING` instead of starting a fake paper; mixed papers draw only from imported official questions. SSC full papers stay locked until official SSC imports exist — the seeded bank is practice material only. |
+| **AI-generated questions are always labelled** | Every question carries `source_type` (`OFFICIAL_PYQ` / `AI_GENERATED` / `CUSTOM`) and a badge is rendered everywhere it appears. The seeded banks (63 UPSC + 47 SSC practice questions) are labelled `AI GENERATED`. |
+| **Sectional auto-lock is server-enforced** | SSC Tier-I sectional timers run on the server clock. When a section's deadline passes the server rejects its answers (`409 SECTION_LOCKED`), the palette disables those questions, and the result reports a per-section breakdown. Never a client-side guess. |
 | **No answer leakage during an exam** | `playableQuestions()` strips `correct_answer`, `explanation`, `subject`, `topic`, `difficulty` before anything reaches the browser. Answers appear only in the result review after submission (and in PYQ Explorer only after you have attempted that question). |
 | **The server owns the clock** | `started_at` + `deadline_at` live in the database. The client only *displays* remaining time received from the server and re-syncs every ~15 s. Refresh, closed tab, laptop sleep or a changed system clock cannot reset or extend time. |
 | **Sunday lock is server-side** | `fullPaperStatus()` is computed from the server clock in `Asia/Kolkata`. The client cannot influence it (`FULL_PAPER_FORCE_AVAILABLE` is an env-only test override, never read from the client). |
@@ -37,9 +46,9 @@ stop.bat       :: stops only the server process, frees port 3456
 
 ```bash
 npm install
-npm run seed        # schema + 63 labelled AI-generated practice questions
+npm run seed        # schema + 63 UPSC + 47 SSC labelled AI practice questions
 npm start           # http://127.0.0.1:3456
-npm test            # full test suite (65 tests)
+npm test            # full test suite (78 tests)
 ```
 
 Default admin token: `local-admin-token` (override with env `ADMIN_TOKEN`).
@@ -48,31 +57,41 @@ Default admin token: `local-admin-token` (override with env `ADMIN_TOKEN`).
 
 ## 3. How the app works (user guide)
 
+**Exam switcher:** the dropdown in the topbar switches between UPSC CSE
+Prelims and SSC CGL. The choice is saved in the browser and injected into
+every API call, so the dashboard, selective practice, full papers, PYQ
+explorer, results and analytics are always scoped to one exam. Shared links
+accept `?exam=SSC_CGL` to force an exam.
+
 **Appearance:** the **Theme** button in the topbar switches between light and dark
 mode. Your choice is saved in the browser (`localStorage`); with no saved choice
 the app follows the OS preference (`prefers-color-scheme`).
 
 ### Dashboard (`#/`)
 
-Shows the two entry modes with their live status, your performance tiles
-(PYQs attempted, accuracy, average score, strongest/weakest subject, mastery,
-20-year coverage) and your recent tests. If a test is still running you get a
-**resume banner** — its original deadline is untouched.
+Shows the two entry modes with their live status for the selected exam, your
+performance tiles (PYQs attempted, accuracy, average score, strongest/weakest
+subject, mastery, year-span coverage) and your recent tests, scoped to that
+exam. If a test is still running you get a **resume banner** — its original
+deadline is untouched.
 
 ### Full Paper (`#/full`) — Sunday only
 
-- **Window:** every Sunday 00:01–23:59 `Asia/Kolkata`, enforced by the server.
-  On other days the page shows `LOCKED` with the reason and the next opening
-  time; the start buttons are disabled (and the API answers `403` if you try).
-- **Two ways to start:**
-  1. **Exact PYQ paper** — pick year + paper (GS1 or CSAT). If that paper is not
-     fully imported you get a `DATA MISSING — 2010 GS Paper I: 0/100 …` notice,
-     not a fabricated test.
-  2. **Mixed paper** — 100 (or 80) randomised official questions from the whole
-     imported pool, shuffled with a server seed. Disabled with an explanatory
-     hint when the official pool for that paper is empty.
-- **Format:** each paper is its own session — GS Paper I 100 Q / 120 min / 200
-  marks, then CSAT 80 Q / 120 min / 200 marks. Never a combined 4-hour test.
+- **Window:** every Sunday 00:01–23:59 `Asia/Kolkata`, enforced by the server
+  for both exams. On other days the page shows `LOCKED` with the reason and
+  the next opening time; the start buttons are disabled (and the API answers
+  `403` if you try).
+- **UPSC:** pick year + paper (GS Paper I or CSAT) as an exact PYQ paper, or a
+  mixed paper from the imported official pool. Each paper is its own session —
+  100 Q / 120 min, then 80 Q / 120 min. Never a combined 4-hour test.
+- **SSC CGL:** pick the paper (Tier-I, Tier-II Paper-I…), the shift, and either
+  an exact imported paper or a current-pattern mixed mock. Tier-I mocks follow
+  the sectional rules: four 25-question sections, each with its own 15-minute
+  timer that **auto-locks** — closed sections cannot be reopened. Historical
+  papers (2006–2021) keep their original formats.
+- Mixed papers draw randomised questions from the imported pool with a server
+  seed, and are disabled with an explanatory hint when the official pool for
+  that paper is empty (`DATA_MISSING` — nothing is ever invented).
 - **Resume:** if you already have an in-progress paper of the same kind, the
   server resumes it instead of creating a new one.
 
@@ -98,6 +117,11 @@ Shows the two entry modes with their live status, your performance tiles
 
 - Server-synced countdown (red under 1 min, amber under 10 min); auto-submits
   at 00:00 even if the tab was closed.
+- **Sectional papers (SSC Tier-I):** a section strip shows each section's state
+  (open / upcoming / locked). When a section's server deadline passes, its
+  palette buttons disable, answers are rejected (`409`), and the runner jumps
+  to the next open section automatically. When all sections close, the test
+  auto-submits.
 - **Palette** (right) with glyph states, not colour alone:
   `✓` answered · `●` visited-not-answered · `M` marked for review · blank = not
   visited. Click any number to jump.
@@ -110,9 +134,16 @@ Shows the two entry modes with their live status, your performance tiles
 
 ### Result (`#/result/:id`)
 
-- Score hero: `marks / total`, accuracy, attempt split, time used, CSAT
-  qualified/not-qualified badge (33% = 66/200) or the **indicative GS cutoff
-  band (70–95) with its disclaimer**.
+- Score hero: `marks / total`, accuracy, attempt split, time used, and a
+  qualification badge driven by the paper's strategy:
+  - **UPSC CSAT** — qualifying 33% (66/200) pass/fail badge.
+  - **UPSC GS1** — indicative cutoff band with its disclaimer.
+  - **SSC Tier-I** — `SHORTLISTING STAGE` (Tier-I shortlists; it decides
+    nothing on its own).
+  - **SSC Tier-II qualifying papers** (Computer Knowledge / Statistics /
+    AAO) — raw score only, with the disclaimer that no cutoff is implied.
+- **Section breakdown table** for sectional papers: per-section attempted /
+  correct / incorrect / unattempted, marks and accuracy.
 - Breakdowns by subject / question type / difficulty, time analysis
   (average, median, fastest, slowest vs estimate).
 - **Answer review** with filters (all / incorrect / correct / unattempted /
@@ -122,7 +153,8 @@ Shows the two entry modes with their live status, your performance tiles
 
 ### PYQ Explorer (`#/pyq`)
 
-- 20-year coverage grid (2007–2026 × GS1/CSAT) with per-cell status:
+- Coverage grid for the selected exam (UPSC 2007–2026 × GS Paper I/CSAT;
+  SSC 2006–2026 × Tier-I/Tier-II papers) with per-cell status:
   `VERIFIED · PARTIAL · REQUIRES VERIFICATION · DATA_MISSING`.
 - Per-question chips coloured by your status (correct / incorrect / mixed /
   skipped / never attempted).
@@ -132,7 +164,10 @@ Shows the two entry modes with their live status, your performance tiles
 
 ### Analytics (`#/analytics`)
 
-- Score-trend line chart across submitted tests.
+- Score-trend line chart across submitted tests for the selected exam.
+- **Progress by mode** — a four-series chart (UPSC Full Paper / UPSC
+  Selective / SSC Full Paper / SSC Selective) of score % normalised across
+  every submitted session, with a toggleable legend.
 - Performance table by subject / topic / question type / difficulty with
   accuracy, average time, estimated time and calibration delta (Δ > 0 means
   you are running slower than the model expects).
@@ -141,14 +176,16 @@ Shows the two entry modes with their live status, your performance tiles
 - **PYQ mastery:** a question counts as *mastered* only with ≥ N correct,
   ≥ M attempts and average time within the configured ratio of its estimate.
   Shows mastered / attempted / struggling / never-attempted over the official
-  corpus.
+  corpus, scoped to the selected exam.
 
 ### Admin (`#/admin`) — token protected
 
 - **Overview:** counts by validation state, unkeyed questions, duplicate
   groups, import batches, "refresh coverage".
 - **Import:** paste or choose a file — JSON, raw OCR text, or an answer key —
-  and pick the source type (Custom / Official PYQ / AI generated).
+  and pick the exam, paper, tier, shift and source type (Custom / Official
+  PYQ / AI generated). SSC imports stamp `exam`, `tier` and `shift` on every
+  row so coverage and duplicate keys stay per-shift correct.
 - **Review queue:** search + filter (needs review, unkeyed, duplicates …),
   edit metadata, **Verify**, mark duplicate, delete. Verified official text is
   locked against casual edits (`423 TEXT_LOCKED`; metadata still editable, text
@@ -181,6 +218,11 @@ npm run import -- 2024-GS1-key.txt --format answerkey --year 2024 --paper GS1
 npm run import -- questions.json --format json --source-type OFFICIAL_PYQ
 ```
 
+The same pipeline serves SSC: pass `--paper SSC_T1` (or `SSC_T2_P1` …) and the
+import stamps `exam`/`tier`/`shift` from the paper/meta, so duplicate keys stay
+`year|paper|shift|number` per shift. The Admin → Import form exposes exam,
+paper, tier and shift dropdowns for the same purpose.
+
 Guarantees: duplicates are caught (`year|paper|question_number` unique key
 plus a content-hash report), bad rows are **rejected and reported — never
 guessed**, every import becomes a batch with counters visible in the admin
@@ -191,13 +233,27 @@ reflect exactly what exists.
 
 ## 5. Scoring model
 
+### UPSC CSE Prelims
+
 | | GS Paper I | CSAT |
 | --- | --- | --- |
 | Questions / duration | 100 / 120 min | 80 / 120 min |
 | Marks | 2 per question (200 total) | 2.5 per question (200 total) |
 | Negative marking | 1/3 of the question's marks (−0.67) | 1/3 (−0.83) |
 | Qualifying | cutoff race (indicative band 70–95, shown with disclaimer) | **33% = 66 marks**, pass/fail |
-| When it runs | Sunday Full Paper mode | Sunday Full Paper mode |
+
+### SSC CGL (2026 pattern)
+
+| | Tier-I | Tier-II Paper-I Session-I | Tier-II Paper-II/III |
+| --- | --- | --- | --- |
+| Questions / duration | 100 / 60 min (4 × 25 sections, **15-min sectional auto-lock**) | 135 Q / 135 min (section time caps: Math 30m, Reasoning 30m, English 40m, GA 20m, Computer 15m) | 100 / 2 h |
+| Marks | 2 per question (200 total) | Math/Reasoning 3, English 3, GA 3, Computer 2 (total 450) | 2 per question (200 total) |
+| Negative marking | −0.50 per wrong | −1 per wrong | −0.50 per wrong |
+| Role | **shortlisting only** — raw score shown with `SHORTLISTING STAGE`, never a final-merit claim | meritdeciding; Computer Knowledge is qualifying within the session | merit (Statistics / AAO) |
+
+Tier-II DEST (Session-II, ~2000 keystrokes in 15 min) is a typing test, not an
+MCQ — the app does not simulate it. Historical SSC papers (2006–2021) use their
+original imported formats.
 
 Accuracy = correct / attempted. Unattempted questions cost nothing.
 
@@ -210,15 +266,16 @@ Accuracy = correct / attempted. Unattempted questions cost nothing.
 | `PORT` / `HOST` | `3456` / `127.0.0.1` | Server bind |
 | `ADMIN_TOKEN` | `local-admin-token` | Admin API/UI token (`x-admin-token`) |
 | `TZ_WINDOW` | `Asia/Kolkata` | Timezone of the Sunday window |
-| `SELECTIVE_BUFFER_SECONDS` | `15` | Buffer per selective question (10–25 target) |
-| `PYQ_START_YEAR` / `PYQ_END_YEAR` | `2007` / `2026` | PYQ range |
+| `SELECTIVE_BUFFER_SECONDS` | `15` | Buffer per selective question (10–25 target), UPSC |
+| `SSC_SELECTIVE_BUFFER_SECONDS` | `15` | Buffer per selective question, SSC |
 | `DB_FILE` | `data/upsc.db` | SQLite location |
 | `FULL_PAPER_FORCE_AVAILABLE` | — | Test-only server override of the Sunday lock |
 
-Other config sections: `PAPERS`, `FULL_PAPER`, `SELECTIVE`, `TIME_MODEL`,
-`SUBJECTS`/`QUESTION_TYPES`/`DIFFICULTIES`, `SESSION` (sync interval, grace
-period, max active sessions), `MASTERY`, `SCORING`, `SOURCE_TYPES`,
-`VALIDATION_STATES`.
+PYQ year ranges are per exam in the registry (UPSC 2007–, SSC 2006–), not a
+global env. Other config sections: `EXAMS` (the two-exam registry with papers,
+sectional rules, taxonomy and historical-format notes), `FULL_PAPER`,
+`SELECTIVE`, `TIME_MODEL`, `SESSION` (sync interval, grace period, max active
+sessions), `MASTERY`, `SCORING`, `SOURCE_TYPES`, `VALIDATION_STATES`.
 
 ---
 
@@ -226,9 +283,10 @@ period, max active sessions), `MASTERY`, `SCORING`, `SOURCE_TYPES`,
 
 ```
 Browser (public/)
+  index.html + js/exam-state.js (exam switcher, shared config cache)
   app.js → router.js → views/{dashboard,fullpaper,selective,exam,result,
             pyq,analytics,admin}.js      vanilla ES modules, no build step
-        │  fetch JSON
+        │  fetch JSON (?exam= on every request)
         ▼
 Express (src/server.js)
   /api/*        public API   (src/routes/api.js)
@@ -237,15 +295,16 @@ Express (src/server.js)
         ▼
 Services (src/services/)
   availability  Sunday window from the server clock
-  session       owns deadlines, answers, submit, result (no answer leakage)
+  session       owns deadlines, sectional locks, answers, submit, result
   timing        estimated seconds + buffer, preview
-  scoring       marks, negative marking, CSAT qualification, GS band
-  selection     exact paper / mixed paper / selective filters
+  scoring       marks, negative marking, qualification per strategy
+  selection     exact paper / mixed paper / selective filters (exam-scoped)
   question      validation, duplicates, verify, lock, coverage refresh
-  mastery / analytics   improvement, calibration, failure loops
+  mastery / analytics   improvement, calibration, 4-series progress
         ▼
 SQLite via node:sqlite (src/db/  schema.sql + database.js)
-  questions · import_batches · paper_coverage · test_sessions ·
+  questions (exam/tier/shift columns, CHECK-healed via selfHeal) ·
+  import_batches · paper_coverage · test_sessions (total_marks) ·
   session_answers · question_stats · settings · audit_log
   + test-only clock offset (advanceClock/setClockOffset) for deterministic tests
 ```
@@ -277,7 +336,7 @@ src/
                           sessionService, questionService, mastery, analytics
   import/                 pipeline + parsers (json, text, answerkey, pdf)
   db/                     schema.sql, database.js
-test/                     node:test suite (65 tests) + isolated temp DBs
+test/                     node:test suite (78 tests) + isolated temp DBs
 ```
 
 ---
@@ -288,28 +347,35 @@ test/                     node:test suite (65 tests) + isolated temp DBs
 npm test
 ```
 
-- **65 tests** across config, availability (Sunday window incl. forced
-  open/closed), timing (base+buffer math), scoring, text parser, selection,
-  question service, and `test/api-flow.test.js` — a full HTTP walk-through of
-  the real Express app: Sunday gate 403/200 (clock offset to a Wednesday/Sunday),
-  `DATA_MISSING` for unimported years, a 100-question mixed paper end to end,
-  no-answer-leakage assertions, timer never increasing across syncs, score math,
-  coverage flipping after an admin import, verified-text lock (`423`), and every
-  analytics endpoint.
+- **78 tests** across config (exam registry), availability (Sunday window incl.
+  forced open/closed), timing (base+buffer math), scoring, text parser,
+  selection, question service, `test/api-flow.test.js` (full HTTP walk-through
+  of the real Express app: Sunday gate 403/200, `DATA_MISSING`, mixed-paper
+  end-to-end, no-answer-leakage, timer monotonicity, score math, coverage
+  refresh, verified-text lock, every analytics endpoint) and
+  `test/ssc.test.js` (schema CHECK healed, shift-aware duplicate keys,
+  exam-scoped selection isolation, SSC taxonomy subjects, Tier-I mixed-paper
+  build, qualification strategies, sectional lock via the server clock,
+  sessions filtered by exam, four-series progress, per-exam coverage).
 - Each test run uses its own `data/test-<pid>.db` and deletes it on exit — the
   dev database is never touched.
-- The UI was additionally verified in headless Chrome: all eight routes render
-  with zero console errors, and the full journey (dashboard → selective →
-  exam → reload → keyboard → submit → result → admin import) passes.
+- The UI was additionally verified in headless Chrome: UPSC and SSC journeys
+  (exam switcher persistence, SSC selective → shortlisting badge, sectional
+  runner, 4-series progress chart toggles, admin import with exam/tier/shift)
+  all pass with zero console errors.
 
 ---
 
 ## 10. Current data status
 
-- **63 AI-generated practice questions** seeded (GS1 across 11 subjects, CSAT
-  incl. a comprehension set and a data-interpretation set), all labelled.
+- **110 AI-generated practice questions** seeded and labelled:
+  - **UPSC (63)** — GS1 across 11 subjects, CSAT incl. a comprehension set and
+    a data-interpretation set.
+  - **SSC (47)** — Tier-I (Reasoning 12, General Awareness 10, Quantitative
+    Aptitude 10, English 8) plus Tier-II Paper-I Computer Knowledge (5) and
+    Paper-II Statistics (2).
 - **Official corpus: 0 imported → coverage 0%, everything shows
-  `DATA_MISSING`** — by design, because UPSC PDFs are scans. Use
-  `npm run fetch-sources` → OCR → `npm run import` to fill it; the dashboard,
-  explorer, Full Paper and mastery metrics light up automatically as
-  `VERIFIED` papers arrive.
+  `DATA_MISSING`** — by design. UPSC PDFs are scans; SSC papers can be imported
+  as JSON/OCR text through Admin → Import (exam, paper, tier and shift are
+  stamped per row). The dashboard, explorer, Full Paper and mastery metrics
+  light up automatically as `VERIFIED` papers arrive.

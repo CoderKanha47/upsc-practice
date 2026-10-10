@@ -1,12 +1,16 @@
 import { get } from '../api.js';
-import { h, mount, loadingBox, fmtPct, fmtDate, fmtDuration, toast } from '../dom.js';
+import { h, mount, loadingBox, fmtPct, fmtDate } from '../dom.js';
 import { navigate } from '../router.js';
+import { getExamMeta, papersForExam, paperLabel } from '../exam-state.js';
 
-export default async function dashboard(view) {
+export default async function dashboard(view, params, query) {
   mount(view, loadingBox());
+  const examId = query?.exam;
+  const examMeta = getExamMeta(examId);
+  const examName = examMeta?.name || 'Exam';
   let data;
   try {
-    data = await get('/api/dashboard');
+    data = await get(`/api/dashboard?exam=${encodeURIComponent(examId)}`);
   } catch (err) {
     mount(view, h('div', { class: 'empty' }, h('strong', { text: 'Cannot load dashboard' }), h('div', { text: err.message })));
     return;
@@ -14,10 +18,9 @@ export default async function dashboard(view) {
 
   const fp = data.fullPaper;
   const perf = data;
-
-  const resumeBox = perf.recentSessions?.length
-    ? null
-    : null;
+  const papers = papersForExam(examId);
+  const defaultPaper = paperLabel(examMeta?.defaultPaper);
+  const yearSpan = examMeta ? examMeta.years.end - examMeta.years.start + 1 : 20;
 
   // Active session resume
   let active = { sessions: [] };
@@ -54,8 +57,12 @@ export default async function dashboard(view) {
     ),
     h('div', { class: 'mode-status', text: fp.label }),
     h('div', { class: 'mode-meta' },
-      h('div', {}, h('span', { text: 'GS Paper I' }), h('strong', { text: '100 Q · 120 min' })),
-      h('div', {}, h('span', { text: 'CSAT' }), h('strong', { text: '80 Q · 120 min' })),
+      ...papers.map((p) =>
+        h('div', {},
+          h('span', { text: p.shortTitle }),
+          h('strong', { text: `${p.questionCount} Q · ${p.durationMinutes} min${p.sectional?.enabled ? ' · sectional' : ''}` }),
+        ),
+      ),
       h('div', {}, h('span', { text: 'Window' }), h('strong', { text: `${fp.openTime}–${fp.closeTime}` })),
       h('div', {}, h('span', { text: 'Timezone' }), h('strong', { text: fp.timezone })),
     ),
@@ -103,12 +110,12 @@ export default async function dashboard(view) {
       { class: 'grid grid-4' },
       tile('PYQs attempted', `${perf.pyqsAttempted}`, `${perf.pyqTotal || 0} official in DB`),
       tile('Accuracy', fmtPct(perf.accuracy), `${perf.totalQuestionExposures || 0} question exposures`, perf.accuracy >= 60 ? 'good' : perf.accuracy > 0 ? 'warn' : ''),
-      tile('Average score', perf.averageScorePercent !== null && perf.averageScorePercent !== undefined ? fmtPct(perf.averageScorePercent) : '—', 'GS Paper I tests'),
+      tile('Average score', perf.averageScorePercent !== null && perf.averageScorePercent !== undefined ? fmtPct(perf.averageScorePercent) : '—', `${defaultPaper} tests`),
       tile('Total tests', String(perf.totalTests || 0), 'submitted sessions'),
       tile('Strongest subject', perf.strongestSubject ? perf.strongestSubject.name : '—', perf.strongestSubject ? `${perf.strongestSubject.accuracy}% accuracy` : 'attempt 3+ questions'),
       tile('Weakest subject', perf.weakestSubject ? perf.weakestSubject.name : '—', perf.weakestSubject ? `${perf.weakestSubject.accuracy}% accuracy` : 'attempt 3+ questions', 'bad'),
       tile('PYQ mastery', `${perf.mastery?.masteryPercent ?? 0}%`, perf.mastery ? `${perf.mastery.mastered} of ${perf.mastery.total} mastered` : '', perf.mastery?.masteryPercent >= 50 ? 'good' : 'warn'),
-      tile('20-year coverage', `${covPct}%`, cov ? `${cov.found} / ${cov.expected} questions imported` : '', covPct >= 100 ? 'good' : 'warn'),
+      tile(`${yearSpan}-year coverage`, `${covPct}%`, cov ? `${cov.found} / ${cov.expected} questions imported` : '', covPct >= 100 ? 'good' : 'warn'),
     ),
   );
 
@@ -126,7 +133,7 @@ export default async function dashboard(view) {
           )),
           h('tbody', {}, ...recent.map((s) =>
             h('tr', {},
-              h('td', {}, h('strong', { text: s.title }), h('div', { class: 'muted', style: { fontSize: '.75rem' }, text: s.paper === 'GS1' ? 'GS Paper I' : 'CSAT' })),
+              h('td', {}, h('strong', { text: s.title }), h('div', { class: 'muted', style: { fontSize: '.75rem' }, text: paperLabel(s.paper) })),
               h('td', {}, h('span', { class: 'badge badge-neutral', text: s.kindLabel })),
               h('td', { class: 'muted', text: fmtDate(s.startedAt) }),
               h('td', { class: 'num', text: `${s.marksObtained ?? 0}` }),
@@ -142,7 +149,7 @@ export default async function dashboard(view) {
     view,
     resume,
     h('div', { class: 'row-between', style: { marginBottom: '1rem' } },
-      h('div', {}, h('h1', { text: 'Dashboard' }), h('div', { class: 'muted', text: `Exam window timezone: ${fp.timezone} · PYQ range 2007–2026` })),
+      h('div', {}, h('h1', { text: `${examName} Dashboard` }), h('div', { class: 'muted', text: `Exam window timezone: ${fp.timezone} · PYQ range ${examMeta ? `${examMeta.years.start}–${examMeta.years.end}` : ''}` })),
     ),
     h('div', { class: 'grid grid-2' }, fullCard, selectiveCard),
     performance,
@@ -156,6 +163,4 @@ export default async function dashboard(view) {
       ),
     ),
   );
-  void resumeBox;
-  void toast;
 }

@@ -1,4 +1,4 @@
-import CONFIG from '../../config/exam.config.js';
+import CONFIG, { EXAMS, DEFAULT_EXAM, examOfPaper } from '../../config/exam.config.js';
 import { getDb } from '../db/database.js';
 
 /**
@@ -9,7 +9,8 @@ import { getDb } from '../db/database.js';
  *
  * base_estimated_time derives from question metadata (type, difficulty, paper,
  * passage length) and is stored on the question so it can later be calibrated
- * against observed actual_time_taken.
+ * against observed actual_time_taken. Each exam carries its own time model
+ * (UPSC is slower, SSC papers are speed tests).
  */
 
 function wordCount(text) {
@@ -17,9 +18,22 @@ function wordCount(text) {
   return String(text).trim().split(/\s+/).filter(Boolean).length;
 }
 
+/** The time model of the exam a question belongs to. */
+export function timeModelFor(meta, cfg = CONFIG) {
+  let examId = meta.exam;
+  if (!examId && meta.paper) {
+    try {
+      examId = examOfPaper(meta.paper).id;
+    } catch {
+      examId = DEFAULT_EXAM;
+    }
+  }
+  return (examId && EXAMS[examId]?.timeModel) || cfg.TIME_MODEL;
+}
+
 /** Estimated seconds for a single question (before buffer). */
 export function estimateSeconds(meta, cfg = CONFIG) {
-  const T = cfg.TIME_MODEL;
+  const T = timeModelFor(meta, cfg);
   const type = meta.question_type && meta.question_type in T.BASE_BY_TYPE
     ? meta.question_type
     : 'default';
@@ -41,15 +55,17 @@ export function questionEstimate(question, cfg = CONFIG) {
   return estimateSeconds(question, cfg);
 }
 
-export function bufferSeconds(cfg = CONFIG) {
+export function bufferSeconds(cfg = CONFIG, examId = DEFAULT_EXAM) {
+  const exam = EXAMS[examId];
+  const settingsKey = exam?.selective?.SETTINGS_KEY || 'SELECTIVE_BUFFER_SECONDS';
   const row = getDb()
     .prepare('SELECT value FROM settings WHERE key = ?')
-    .get('SELECTIVE_BUFFER_SECONDS');
+    .get(settingsKey);
   if (row) {
     const v = Number(row.value);
     if (Number.isFinite(v) && v >= 0) return v;
   }
-  return cfg.SELECTIVE.BUFFER_SECONDS;
+  return exam?.selective?.BUFFER_SECONDS ?? cfg.SELECTIVE.BUFFER_SECONDS;
 }
 
 export function formatDuration(totalSeconds) {
@@ -116,6 +132,7 @@ export function calibrationFor(question, stats, cfg = CONFIG) {
 }
 
 export default {
+  timeModelFor,
   estimateSeconds,
   questionEstimate,
   bufferSeconds,

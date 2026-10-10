@@ -1,13 +1,21 @@
 import { get, post } from '../api.js';
 import { h, mount, loadingBox, fmtPct, fmtDate, toast, badgeForSourceType } from '../dom.js';
 import { navigate } from '../router.js';
+import { getExamMeta, papersForExam } from '../exam-state.js';
 
-export default async function pyq(view) {
+export default async function pyq(view, params, query) {
   mount(view, loadingBox());
+  const examId = query?.exam;
+  const examMeta = getExamMeta(examId);
+  const papers = papersForExam(examId);
+  const yearSpan = examMeta ? examMeta.years.end - examMeta.years.start + 1 : 20;
   let coverage;
   let questions;
   try {
-    const [covRes, qRes] = await Promise.all([get('/api/pyq/coverage'), get('/api/pyq/questions')]);
+    const [covRes, qRes] = await Promise.all([
+      get(`/api/pyq/coverage?exam=${encodeURIComponent(examId)}`),
+      get(`/api/pyq/questions?exam=${encodeURIComponent(examId)}`),
+    ]);
     coverage = covRes;
     questions = qRes.questions || [];
   } catch (err) {
@@ -26,7 +34,7 @@ export default async function pyq(view) {
 
   const startPractice = async (year, paper) => {
     try {
-      const res = await post('/api/pyq/practice', { year, paper });
+      const res = await post('/api/pyq/practice', { year, paper, exam: examId });
       navigate(`/exam/${res.session.id}`);
     } catch (err) {
       toast(err.message, 'error');
@@ -47,7 +55,7 @@ export default async function pyq(view) {
       questionList.appendChild(
         h('div', { class: 'empty' },
           h('strong', { text: 'No official questions imported for this selection' }),
-          h('div', { text: 'DATA_MISSING — UPSC papers are imported through Admin → Import. Nothing is invented.' }),
+          h('div', { text: 'DATA_MISSING — papers are imported through Admin → Import. Nothing is invented.' }),
         ),
       );
       return;
@@ -101,8 +109,9 @@ export default async function pyq(view) {
   /* year blocks */
   const yearList = h('div', { class: 'year-list' });
   for (const y of coverage.years) {
-    const paperBoxes = ['GS1', 'CSAT'].map((pid) => {
-      const info = y.papers[pid];
+    const paperBoxes = papers.map((p) => {
+      const pid = p.id;
+      const info = y.papers[pid] || { status: 'DATA_MISSING', found: 0, expected: 0, keyed: 0, verified: 0 };
       const pool = questions.filter((q) => Number(q.year) === y.year && q.paper === pid);
       const chips = pool.map((q) => {
         const cls =
@@ -115,7 +124,7 @@ export default async function pyq(view) {
         : '—';
       return h('div', { class: 'paper-box' },
         h('div', { class: 'row-between' },
-          h('h4', { text: pid === 'GS1' ? 'GS Paper I' : 'CSAT' }),
+          h('h4', { text: p.shortTitle }),
           h('span', { class: `badge ${info.status === 'VERIFIED' ? 'badge-verified' : info.status === 'DATA_MISSING' ? 'badge-missing' : 'badge-review'}`, text: info.status.replace(/_/g, ' ') }),
         ),
         h('div', { class: 'line' },
@@ -167,9 +176,8 @@ export default async function pyq(view) {
       renderQuestions();
     },
   },
-    h('option', { value: '' }, 'Both papers'),
-    h('option', { value: 'GS1' }, 'GS Paper I'),
-    h('option', { value: 'CSAT' }, 'CSAT'),
+    h('option', { value: '' }, 'All papers'),
+    ...papers.map((p) => h('option', { value: p.id }, p.shortTitle)),
   );
 
   renderQuestions();
@@ -178,14 +186,14 @@ export default async function pyq(view) {
     view,
     h('div', { class: 'row-between', style: { marginBottom: '1rem' } },
       h('div', {},
-        h('h1', { text: 'PYQ Explorer' }),
-        h('div', { class: 'muted', text: '2007–2026 General Studies and CSAT papers, exactly as imported — never rewritten.' }),
+        h('h1', { text: `${examMeta?.name || 'Exam'} · PYQ Explorer` }),
+        h('div', { class: 'muted', text: `${examMeta ? `${examMeta.years.start}–${examMeta.years.end}` : ''} papers, exactly as imported — never rewritten.` }),
       ),
       h('div', { class: 'btn-row' }, h('a', { class: 'btn', href: '#/selective' }, 'Selective practice'), h('a', { class: 'btn', href: '#/' }, 'Dashboard')),
     ),
 
     h('div', { class: 'grid grid-3' },
-      h('div', { class: 'tile' }, h('div', { class: 'tile-label', text: 'Imported' }), h('div', { class: 'tile-value', text: `${coverage.totals.found} / ${coverage.totals.expected}` }), h('div', { class: 'tile-sub', text: `${coverage.totals.percent}% of the 20-year corpus` })),
+      h('div', { class: 'tile' }, h('div', { class: 'tile-label', text: 'Imported' }), h('div', { class: 'tile-value', text: `${coverage.totals.found} / ${coverage.totals.expected}` }), h('div', { class: 'tile-sub', text: `${coverage.totals.percent}% of the ${yearSpan}-year corpus` })),
       h('div', { class: 'tile' }, h('div', { class: 'tile-label', text: 'Answer-keyed' }), h('div', { class: 'tile-value', text: String(coverage.totals.keyed) }), h('div', { class: 'tile-sub', text: 'questions with a correct answer' })),
       h('div', { class: 'tile' }, h('div', { class: 'tile-label', text: 'Your attempts' }), h('div', { class: 'tile-value', text: String(questions.filter((q) => q.status !== 'NEVER_ATTEMPTED').length) }), h('div', { class: 'tile-sub', text: 'official questions attempted' })),
     ),

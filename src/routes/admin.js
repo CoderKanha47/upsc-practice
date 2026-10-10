@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import CONFIG from '../../config/exam.config.js';
+import CONFIG, { EXAMS, DEFAULT_EXAM } from '../../config/exam.config.js';
 import { getDb, now } from '../db/database.js';
 import {
   searchQuestions,
@@ -95,6 +95,25 @@ router.get('/batches', (req, res) => {
 
 router.get('/taxonomy', (req, res) => {
   res.json({
+    defaultExam: DEFAULT_EXAM,
+    exams: Object.values(EXAMS).map((e) => ({
+      id: e.id,
+      name: e.name,
+      papers: Object.values(e.papers).map((p) => ({
+        id: p.id,
+        title: p.title,
+        shortTitle: p.shortTitle,
+        tier: p.tier || null,
+        sections: p.sections,
+        sectional: p.sectional,
+      })),
+      years: Array.from(
+        { length: e.years.END_YEAR - e.years.START_YEAR + 1 },
+        (_, i) => e.years.END_YEAR - i,
+      ),
+      subjects: e.subjects,
+      topics: e.topics || null,
+    })),
     subjects: CONFIG.SUBJECTS,
     questionTypes: CONFIG.QUESTION_TYPES,
     difficulties: CONFIG.DIFFICULTIES,

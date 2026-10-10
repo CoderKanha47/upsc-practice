@@ -1,14 +1,14 @@
 import crypto from 'node:crypto';
-import CONFIG from '../../config/exam.config.js';
+import CONFIG, { getPaper, examOfPaper, yearRange } from '../../config/exam.config.js';
 import { getDb } from '../db/database.js';
 
 /**
  * QUESTION SELECTION ENGINE
  * -------------------------
- * Builds papers that resemble the distribution and character of real UPSC
- * papers: subject ratios, difficulty mix and question-type variety are all
- * driven by CONFIG.DISTRIBUTIONS. Selection is seeded so a paper can be
- * reproduced exactly from its seed.
+ * Builds papers that resemble the distribution and character of real papers
+ * for the selected exam: subject ratios, difficulty mix and question-type
+ * variety are driven by CONFIG.DISTRIBUTIONS. Selection is seeded so a paper
+ * can be reproduced exactly from its seed.
  */
 
 /* ------------------------------------------------------------------ random */
@@ -52,7 +52,7 @@ export function shuffle(arr, rng) {
 
 /* -------------------------------------------------------------------- pool */
 const BASE_SELECT = `
-  SELECT id, year, paper, question_number, question_text, passage, group_id,
+  SELECT id, year, exam, paper, tier, shift, question_number, question_text, passage, group_id,
          group_index, options_json, subject, topic, subtopic, difficulty,
          question_type, estimated_time_seconds, marks, negative_marks,
          source_type, validation_state, source, is_official_pyq, dup_key
@@ -68,8 +68,11 @@ function buildWhere(filters = {}) {
     params.push(...vals);
   };
 
+  if (filters.exam) add('exam = ?', filters.exam);
+  if (filters.exams?.length) add(`exam IN (${filters.exams.map(() => '?').join(',')})`, ...filters.exams);
   if (filters.paper) add('paper = ?', filters.paper);
   if (filters.papers?.length) add(`paper IN (${filters.papers.map(() => '?').join(',')})`, ...filters.papers);
+  if (filters.shift) add('shift = ?', filters.shift);
   if (filters.years?.length) add(`year IN (${filters.years.map(() => '?').join(',')})`, ...filters.years);
   if (filters.subjects?.length) add(`subject IN (${filters.subjects.map(() => '?').join(',')})`, ...filters.subjects);
   if (filters.topics?.length) add(`topic IN (${filters.topics.map(() => '?').join(',')})`, ...filters.topics);
@@ -113,18 +116,22 @@ function decorate(row) {
 
 /* ------------------------------------------------------------- exact paper */
 /** Reproduce an actual historical paper exactly, in original order. */
-export function pickExactPaper(year, paperId) {
+export function pickExactPaper(year, paperId, opts = {}) {
   const db = getDb();
+  const clauses = ['year = ?', 'paper = ?', 'is_duplicate = 0', "source_type = 'OFFICIAL_PYQ'", "validation_state IN ('PARSED','REVIEW_REQUIRED','VERIFIED')"];
+  const params = [Number(year), paperId];
+  if (opts.shift) {
+    clauses.push('shift = ?');
+    params.push(opts.shift);
+  }
   const rows = db
     .prepare(
       `SELECT id, question_number FROM questions
-       WHERE year = ? AND paper = ? AND is_duplicate = 0
-         AND source_type = 'OFFICIAL_PYQ'
-         AND validation_state IN ('PARSED','REVIEW_REQUIRED','VERIFIED')
+       WHERE ${clauses.join(' AND ')}
        ORDER BY question_number ASC, id ASC`,
     )
-    .all(Number(year), paperId);
-  const expected = CONFIG.PAPERS[paperId]?.questionCount ?? rows.length;
+    .all(...params);
+  const expected = getPaper(paperId).questionCount ?? rows.length;
   return {
     questionIds: rows.map((r) => r.id),
     found: rows.length,
@@ -169,7 +176,7 @@ export function buildMixedPaper(paperId, count, opts = {}) {
   const cfg = opts.config || CONFIG;
   const seed = opts.seed || randomSeed();
   const rng = makeRng(`${seed}:${paperId}:${count}`);
-  const years = opts.years || rangeYears(cfg);
+  const years = opts.years || rangeYearsFor(paperId);
 
   const pool = loadPool({
     paper: paperId,
@@ -282,6 +289,15 @@ function rangeYears(cfg = CONFIG) {
   const out = [];
   for (let y = cfg.YEARS.END_YEAR; y >= cfg.YEARS.START_YEAR; y -= 1) out.push(y);
   return out;
+}
+
+/** Year list of the exam a paper belongs to (descending). */
+function rangeYearsFor(paperId) {
+  try {
+    return yearRange(examOfPaper(paperId).id);
+  } catch {
+    return rangeYears(CONFIG);
+  }
 }
 
 export function distributionReport(questions) {

@@ -1,6 +1,7 @@
 import { get, post } from '../api.js';
-import { h, mount, loadingBox, fmtClock, fmtDuration, fmtDate, fmtPct, toast, badgeForSourceType, confirmDialog, bar } from '../dom.js';
+import { h, mount, loadingBox, fmtDuration, fmtDate, fmtPct, toast, badgeForSourceType, bar } from '../dom.js';
 import { navigate } from '../router.js';
+import { paperLabel } from '../exam-state.js';
 
 export default async function result(view, params) {
   mount(view, loadingBox('Scoring your test…'));
@@ -23,11 +24,45 @@ export default async function result(view, params) {
     return;
   }
 
-  const { session, paper, score, qualification, review, distribution, time } = data;
+  const { session, paper, score, qualification, review, distribution, time, sections } = data;
   const filterState = { filter: 'ALL', query: '' };
 
-  const isCsat = session.paper === 'CSAT';
   const pct = score.totalMarks ? (score.marksObtained / score.totalMarks) * 100 : 0;
+
+  /* ------------------------------------------- qualification (strategy-driven) */
+  function qualificationBadge() {
+    switch (qualification?.type) {
+      case 'QUALIFYING_PERCENTAGE':
+        return h('span', {
+          class: `qual-badge ${qualification.status === 'QUALIFIED' ? 'pass' : 'fail'}`,
+          text: `${paperLabel(session.paper)}: ${qualification.status} (need ${qualification.thresholdMarks}/${paper.marks})`,
+        });
+      case 'SHORTLISTING_STAGE':
+        return h('span', { class: 'qual-badge pass', text: qualification.status || 'SHORTLISTING STAGE' });
+      case 'CUTOFF_ESTIMATE':
+        return h('span', {
+          class: `qual-badge ${qualification.position?.startsWith('BELOW') ? 'fail' : 'pass'}`,
+          text: `Indicative band: ${qualification.position}`,
+        });
+      case 'RAW_SCORE':
+      default:
+        return h('span', { class: 'qual-badge pass', text: qualification?.status || 'RAW SCORE' });
+    }
+  }
+
+  function qualificationNotice() {
+    switch (qualification?.type) {
+      case 'QUALIFYING_PERCENTAGE':
+        return h('div', { class: `notice ${qualification.status === 'QUALIFIED' ? 'good' : 'warn'}`, text: `${qualification.note} Threshold: ${qualification.thresholdMarks} marks (${qualification.qualifyingPercentage}% of ${paper.marks}).` });
+      case 'SHORTLISTING_STAGE':
+        return h('div', { class: 'notice', text: `${qualification.note} Obtained: ${qualification.obtained} marks.` });
+      case 'CUTOFF_ESTIMATE':
+        return h('div', { class: 'notice warn', text: `${qualification.disclaimer} Your ${score.marksObtained} marks sit ${qualification.position.toLowerCase()} (${qualification.range[0]}–${qualification.range[1]}).` });
+      case 'RAW_SCORE':
+      default:
+        return h('div', { class: 'notice', text: `${qualification?.disclaimer || 'Raw score — no cutoff is implied.'} Obtained: ${qualification?.obtained ?? score.marksObtained} marks.` });
+    }
+  }
 
   /* ---------------------------------------------------- hero + tiles */
   const hero = h(
@@ -35,15 +70,13 @@ export default async function result(view, params) {
     { class: 'result-hero' },
     h('div', {},
       h('h1', { text: session.title }),
-      h('div', { class: 'sub', text: `${session.kindLabel} · ${paper.title} · ${paper.questionCount} questions · ${paper.durationMinutes} minutes` }),
+      h('div', { class: 'sub', text: `${session.kindLabel} · ${paper.title} · ${paper.questionCount} questions · ${paper.durationMinutes} minutes${session.exam ? ` · ${session.exam === 'SSC_CGL' ? 'SSC CGL' : 'UPSC CSE'}` : ''}` }),
       h('div', { class: 'sub', text: `${fmtDate(session.started_at)}${session.status === 'AUTO_SUBMITTED' ? ' · auto-submitted at time over' : ''}` }),
     ),
     h('div', { class: 'result-score' },
       h('div', { class: 'big', text: `${score.marksObtained} / ${score.totalMarks}` }),
       h('div', { class: 'of', text: `${pct.toFixed(1)}% of total marks · ${score.accuracy}% accuracy` }),
-      isCsat
-        ? h('span', { class: `qual-badge ${qualification.status === 'QUALIFIED' ? 'pass' : 'fail'}`, text: `CSAT: ${qualification.status} (need ${qualification.thresholdMarks}/${paper.marks})` })
-        : h('span', { class: `qual-badge ${qualification.position.startsWith('BELOW') ? 'fail' : 'pass'}`, text: `GS indicative band: ${qualification.position}` }),
+      qualificationBadge(),
     ),
   );
 
@@ -65,13 +98,40 @@ export default async function result(view, params) {
   const tiles = h('div', { class: 'grid grid-4', style: { marginTop: '1rem' } },
     tile('Attempted', `${score.attempted} / ${review.length}`, `${score.unattempted} unattempted`),
     tile('Correct', String(score.correct), `+${score.correctMarks} marks`, 'good'),
-    tile('Incorrect', String(score.incorrect), `−${score.negativeMarks} marks (1/3)`, 'bad'),
+    tile('Incorrect', String(score.incorrect), `−${score.negativeMarks} marks negative`, 'bad'),
     tile('Time used', fmtDuration(score.timeUsedSeconds), score.autoSubmitted ? 'submitted at time over' : `${fmtDuration(score.timeRemainingSeconds)} left`),
   );
 
-  const qualificationNotice = isCsat
-    ? h('div', { class: `notice ${qualification.status === 'QUALIFIED' ? 'good' : 'warn'}`, text: `${qualification.note} Threshold: ${qualification.thresholdMarks} marks (${qualification.qualifyingPercentage}% of ${paper.marks}).` })
-    : h('div', { class: 'notice warn', text: `${qualification.disclaimer} Your ${score.marksObtained} marks sit ${qualification.position.toLowerCase()} (${qualification.range[0]}–${qualification.range[1]}).` });
+  const sectionsCard = Array.isArray(sections) && sections.length
+    ? h('section', { class: 'card section-gap' },
+        h('div', { class: 'card-title' },
+          h('h2', { text: 'Section breakdown' }),
+          h('span', { class: 'muted', style: { fontSize: '.82rem' }, text: 'sectional paper — each section timed and auto-locked' }),
+        ),
+        h('div', { class: 'table-wrap' },
+          h('table', { class: 'table' },
+            h('thead', {}, h('tr', {},
+              h('th', { text: 'Section' }), h('th', { class: 'num', text: 'Questions' }),
+              h('th', { class: 'num', text: 'Attempted' }), h('th', { class: 'num', text: 'Correct' }),
+              h('th', { class: 'num', text: 'Incorrect' }), h('th', { class: 'num', text: 'Unattempted' }),
+              h('th', { class: 'num', text: 'Marks' }), h('th', { class: 'num', text: 'Accuracy' }),
+            )),
+            h('tbody', {}, ...sections.map((s) =>
+              h('tr', {},
+                h('td', {}, h('strong', { text: s.title || s.section || s.id }), s.qualifying ? h('span', { class: 'badge badge-neutral', style: { marginLeft: '.4rem' }, text: 'qualifying' }) : null),
+                h('td', { class: 'num', text: String(s.total) }),
+                h('td', { class: 'num', text: String(s.attempted) }),
+                h('td', { class: 'num', text: String(s.correct) }),
+                h('td', { class: 'num', text: String(s.incorrect) }),
+                h('td', { class: 'num', text: String(s.unattempted) }),
+                h('td', { class: 'num', text: `${s.marksObtained}${s.marks != null ? ` / ${s.marks}` : ''}` }),
+                h('td', { class: 'num', text: fmtPct(s.accuracy) }),
+              ),
+            )),
+          ),
+        ),
+      )
+    : null;
 
   /* ---------------------------------------------------- breakdown */
   const breakdownCard = (title, bucket) => {
@@ -149,7 +209,7 @@ export default async function result(view, params) {
           toast('No similar questions in the bank yet.', 'error');
           return;
         }
-        const started = await post('/api/selective/start', { includeIds: ids, count: 'all', includeOfficial: true, includeAiGenerated: true, includeCustom: true });
+        const started = await post('/api/selective/start', { includeIds: ids, count: 'all', exam: session.exam, includeOfficial: true, includeAiGenerated: true, includeCustom: true });
         navigate(`/exam/${started.session.id}`);
       } catch (err) {
         toast(err.message, 'error');
@@ -237,7 +297,8 @@ export default async function result(view, params) {
     hero,
     tiles,
     strip,
-    qualificationNotice,
+    qualificationNotice(),
+    sectionsCard,
     h('section', { class: 'grid grid-4 section-gap' },
       breakdownCard('By subject', distribution.subject),
       breakdownCard('By question type', distribution.questionType),
@@ -253,5 +314,4 @@ export default async function result(view, params) {
       reviewList,
     ),
   );
-  void fmtClock;
 }

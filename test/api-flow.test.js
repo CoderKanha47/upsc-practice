@@ -78,7 +78,7 @@ test('health + static shell', async () => {
 test('config exposes exam rules, papers and timing knobs', async () => {
   const { status, data } = await req('/api/config');
   assert.equal(status, 200);
-  assert.equal(data.papers.length, 2);
+  assert.equal(data.papers.length, 6); // UPSC GS1/CSAT + SSC Tier-I + Tier-II ×3
   assert.ok(data.papers.every((p) => p.questionCount && p.durationMinutes));
   assert.equal(data.years.start, 2007);
   assert.equal(data.years.end, 2026);

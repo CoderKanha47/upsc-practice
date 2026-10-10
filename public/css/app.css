@@ -166,6 +166,21 @@ small, .muted { color: var(--muted); font-size: 0.85rem; }
 :root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
 :root[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
 
+/* exam switcher (topbar) */
+.exam-switch { display: inline-flex; align-items: center; }
+.exam-switch select {
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff; border-radius: 6px; padding: 0.35rem 0.5rem;
+  font-size: 0.8rem; font-weight: 550; cursor: pointer;
+}
+.exam-switch select:hover { background: rgba(255, 255, 255, 0.16); }
+.exam-switch select:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.exam-switch option { color: #111; background: #fff; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
 .view { max-width: 1240px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; outline: none; }
 .view-narrow { max-width: 900px; }
 
@@ -347,6 +362,20 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--info-text);
 }
 .exam-timer.critical { background: var(--danger); border-color: var(--danger); }
 .exam-timer.warning { background: #7a5200; }
+.exam-timer-section { font-size: 0.82rem; min-width: 0; opacity: 0.95; }
+
+/* sectional papers (SSC Tier-I style) */
+.section-strip { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
+.section-chip {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  border: 1.5px solid var(--line); border-radius: 6px; padding: 0.22rem 0.5rem;
+  font-size: 0.72rem; background: var(--grey-soft);
+}
+.section-chip-title { font-weight: 600; }
+.section-chip-time { font-family: var(--mono); }
+.section-chip.sec-open { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); }
+.section-chip.sec-upcoming { background: var(--grey-soft); color: var(--faint); }
+.section-chip.sec-closed { background: var(--danger-soft); border-color: var(--danger-text); color: var(--danger-text); text-decoration: line-through; }
 
 .exam-body {
   display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem;
@@ -414,6 +443,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--info-text);
 .p-btn.state-marked { background: var(--purple); border-color: var(--purple); color: #fff; }
 .p-btn.state-marked-answered { background: var(--purple); border-color: var(--purple); color: #fff; box-shadow: inset 0 -4px 0 var(--accent); }
 .p-btn.state-notvisited { background: var(--grey-soft); color: var(--faint); }
+.p-btn.state-locked, .p-btn.state-locked:hover {
+  background: var(--danger-soft); border-color: var(--danger-text); color: var(--danger-text);
+  opacity: 0.55; cursor: not-allowed; text-decoration: line-through;
+}
+.option.disabled { opacity: 0.6; cursor: not-allowed; }
 .palette-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; padding: 0.6rem 0.9rem 0.85rem; border-top: 1px solid var(--line-2); font-size: 0.7rem; color: var(--muted); }
 .legend-item { display: flex; align-items: center; gap: 0.4rem; }
 .legend-swatch { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid var(--line); flex: none; }
@@ -421,6 +455,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--info-text);
 .legend-swatch.notanswered { background: var(--danger-soft); border-color: var(--danger-text); }
 .legend-swatch.marked { background: var(--purple); border-color: var(--purple); }
 .legend-swatch.notvisited { background: var(--grey-soft); }
+.legend-swatch.locked { background: var(--danger-soft); border-color: var(--danger-text); }
+
+/* progress chart legend toggles */
+.progress-legend { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.6rem; }
+.legend-toggle {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1.5px solid var(--line); border-radius: 999px; padding: 0.2rem 0.65rem;
+  background: var(--card); color: var(--heading); font-size: 0.76rem; cursor: pointer;
+}
+.legend-toggle.off { opacity: 0.4; text-decoration: line-through; }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .palette-stats { display: flex; justify-content: space-between; font-size: 0.74rem; padding: 0 0.9rem 0.8rem; color: var(--muted); font-family: var(--mono); }
 .kbd-help { padding: 0.6rem 0.9rem; border-top: 1px solid var(--line-2); font-size: 0.7rem; color: var(--muted); }
 kbd {

@@ -16,14 +16,14 @@ import { insertMany, refreshCoverage } from '../services/questionService.js';
  * Nothing is ever invented: unparseable sources come back as warnings.
  */
 
-function newBatch(filename, format, sourceType) {
+function newBatch(filename, format, sourceType, exam = null) {
   const id = newId('batch');
   getDb()
     .prepare(
-      `INSERT INTO import_batches (id, filename, format, source_type, state, created_at)
-       VALUES (?, ?, ?, ?, 'IMPORTED', ?)`,
+      `INSERT INTO import_batches (id, filename, format, source_type, exam, state, created_at)
+       VALUES (?, ?, ?, ?, ?, 'IMPORTED', ?)`,
     )
-    .run(id, filename || null, format, sourceType || null, now());
+    .run(id, filename || null, format, sourceType || null, exam, now());
   return id;
 }
 
@@ -55,12 +55,19 @@ export function listBatches(limit = 30) {
 /**
  * Import structured questions (canonical JSON).
  */
-export function importJson({ content, filename = 'upload.json', sourceType = 'OFFICIAL_PYQ' }) {
+export function importJson({ content, filename = 'upload.json', sourceType = 'OFFICIAL_PYQ', exam = null, tier = null, shift = null }) {
   const { meta, questions, answerKey } = parseJsonPayload(content);
   const withKey = applyAnswerKey(questions, answerKey);
-  const batchId = newBatch(filename, 'json', sourceType || meta.source_type);
+  // Request-level exam defaults fill gaps left by the file's own meta.
+  const stamped = withKey.questions.map((q) => ({
+    ...q,
+    exam: q.exam || exam || null,
+    tier: q.tier || tier || null,
+    shift: q.shift || shift || null,
+  }));
+  const batchId = newBatch(filename, 'json', sourceType || meta.source_type, stamped[0]?.exam || exam);
 
-  const summary = insertMany(withKey.questions, { batchId, source: meta.source });
+  const summary = insertMany(stamped, { batchId, source: meta.source });
   const state = summary.inserted === 0 ? 'REVIEW_REQUIRED' : summary.review > 0 ? 'REVIEW_REQUIRED' : 'PARSED';
   const batch = finishBatch(batchId, {
     state,
@@ -84,13 +91,16 @@ export function importJson({ content, filename = 'upload.json', sourceType = 'OF
  * Questions land as REVIEW_REQUIRED until an answer key is attached and an
  * admin verifies them.
  */
-export function importText({ content, filename = 'paper.txt', year = null, paper = 'GS1', source = null }) {
+export function importText({ content, filename = 'paper.txt', year = null, paper = 'GS1', source = null, exam = null, tier = null, shift = null }) {
   const parsed = parsePaperText(content, {
     paper,
     year,
     source: source || filename,
+    exam,
+    tier,
+    shift,
   });
-  const batchId = newBatch(filename, 'text', 'OFFICIAL_PYQ');
+  const batchId = newBatch(filename, 'text', 'OFFICIAL_PYQ', exam);
   const summary = insertMany(parsed.questions, { batchId, source: source || filename });
   const needsReview = summary.inserted; // text imports always need verification
   const batch = finishBatch(batchId, {
@@ -122,7 +132,7 @@ export function parseAnswerKeyText(text) {
  * Attach an official/community answer key to an already-imported paper.
  * Updates correct_answer for matching (year, paper, question_number).
  */
-export function importAnswerKey({ content, year, paper, filename = 'answer-key' }) {
+export function importAnswerKey({ content, year, paper, filename = 'answer-key', shift = null }) {
   let answers = {};
   if (typeof content === 'string') {
     const trimmed = content.trim();
@@ -152,9 +162,10 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key' 
     const row = db
       .prepare(
         `SELECT id, correct_answer, validation_state, options_json FROM questions
-         WHERE year = ? AND paper = ? AND question_number = ? AND is_duplicate = 0`,
+         WHERE year = ? AND paper = ? AND question_number = ? AND is_duplicate = 0
+           AND (shift IS ? OR shift = ?)`,
       )
-      .get(Number(year), paper, num);
+      .get(Number(year), paper, num, shift ?? null, shift ?? null);
     if (!row) {
       missing.push(num);
       continue;
@@ -193,6 +204,9 @@ export async function runImport({ format, content, meta = {} }) {
         content,
         filename: meta.filename,
         sourceType: meta.sourceType || 'OFFICIAL_PYQ',
+        exam: meta.exam || null,
+        tier: meta.tier || null,
+        shift: meta.shift || null,
       });
     case 'text':
       return importText({
@@ -201,6 +215,9 @@ export async function runImport({ format, content, meta = {} }) {
         year: meta.year,
         paper: meta.paper,
         source: meta.source,
+        exam: meta.exam || null,
+        tier: meta.tier || null,
+        shift: meta.shift || null,
       });
     case 'answerkey':
       return importAnswerKey({
@@ -208,6 +225,7 @@ export async function runImport({ format, content, meta = {} }) {
         year: meta.year,
         paper: meta.paper,
         filename: meta.filename,
+        shift: meta.shift || null,
       });
     default: {
       const err = new Error(`Unknown import format: ${format}`);

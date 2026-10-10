@@ -1,10 +1,11 @@
-import CONFIG, { getPaper } from '../../config/exam.config.js';
+import CONFIG, { getPaper, EXAMS } from '../../config/exam.config.js';
 
 /**
  * CENTRAL SCORING ENGINE
  * ----------------------
- * All UPSC scoring rules are read from CONFIG.PAPERS — never hardcoded in
- * views, routes or components. If UPSC changes its scheme, only config changes.
+ * All scoring rules are read from CONFIG.PAPERS — never hardcoded in views,
+ * routes or components. Marks and negatives are per-paper, so UPSC (2/−0.66,
+ * 2.5/−0.83) and SSC (2/−0.5, 3/−1) are all driven by configuration.
  *
  *   correct      → +marks
  *   wrong        → −negative_marks  (configured as negativeFraction × marks)
@@ -21,7 +22,7 @@ export function marksFor(question, paperId) {
 }
 
 /**
- * @param {string} paperId 'GS1' | 'CSAT'
+ * @param {string} paperId any configured paper id
  * @param {Array} questions rows with id, correct_answer, marks, negative_marks
  * @param {Array} answers rows with question_id, answer, time_spent_seconds
  */
@@ -114,7 +115,7 @@ export function scoreSubmission(paperId, questions, answers = [], cfg = CONFIG) 
   };
 }
 
-/** CSAT is a qualifying paper: 33% of 200 marks under the current scheme. */
+/** CSAT-style qualifying paper: percentage threshold of total marks. */
 export function csatQualification(marksObtained, paperId = 'CSAT', cfg = CONFIG) {
   const paper = getPaper(paperId);
   const percentage = paper.qualifyingPercentage ?? 33;
@@ -145,4 +146,40 @@ export function gsCutoffEstimate(marksObtained, cfg = CONFIG) {
   };
 }
 
-export default { scoreSubmission, csatQualification, gsCutoffEstimate, marksFor };
+/**
+ * Generic post-score qualification block. The strategy is chosen from the
+ * paper's configuration, never hardcoded per exam:
+ *   - qualifyingPercentage set  → threshold paper (UPSC CSAT 33%)
+ *   - qualifying, no percentage → shortlisting stage (SSC Tier-I)
+ *   - merit paper               → indicative cutoff (UPSC GS1) or raw score
+ */
+export function resultQualification(marksObtained, paperId, cfg = CONFIG) {
+  const paper = getPaper(paperId);
+  const exam = EXAMS[paper.exam];
+  const obtained = round2(marksObtained);
+
+  if (paper.qualifying && paper.qualifyingPercentage != null) {
+    return { type: 'QUALIFYING_PERCENTAGE', ...csatQualification(marksObtained, paperId, cfg) };
+  }
+  if (paper.qualifying) {
+    return {
+      type: 'SHORTLISTING_STAGE',
+      obtained,
+      status: 'SHORTLISTING STAGE',
+      note:
+        paper.qualifyingNote ||
+        'This paper is a shortlisting stage; its marks are not counted toward final merit.',
+    };
+  }
+  if (exam?.scoring?.GS_CUTOFF_ESTIMATE_RANGE) {
+    return { type: 'CUTOFF_ESTIMATE', ...gsCutoffEstimate(marksObtained, cfg) };
+  }
+  return {
+    type: 'RAW_SCORE',
+    obtained,
+    status: 'RAW SCORE',
+    disclaimer: exam?.scoring?.DISCLAIMER || cfg.SCORING.CUTOFF_DISCLAIMER,
+  };
+}
+
+export default { scoreSubmission, csatQualification, gsCutoffEstimate, resultQualification, marksFor };

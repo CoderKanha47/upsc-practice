@@ -1,4 +1,5 @@
-import { register, startRouter } from './router.js';
+import { register, startRouter, redispatch } from './router.js';
+import { loadExamConfig, currentExam, setExam, getExamMeta } from './exam-state.js';
 import dashboard from './views/dashboard.js';
 import fullpaper from './views/fullpaper.js';
 import selective from './views/selective.js';
@@ -42,4 +43,40 @@ if (themeBtn) {
   });
 }
 
-startRouter();
+/* ------------------------------------------------ exam switcher + branding */
+function applyExamChrome(examId) {
+  const meta = getExamMeta(examId);
+  const nameEl = document.getElementById('brandName');
+  const subEl = document.getElementById('brandSub');
+  const markEl = document.getElementById('brandMark');
+  if (meta) {
+    if (nameEl) nameEl.textContent = meta.name;
+    if (subEl) subEl.textContent = `${meta.years.start}–${meta.years.end} · PYQ practice engine`;
+    if (markEl) markEl.textContent = meta.id === 'SSC_CGL' ? 'S' : 'U';
+    document.title = `${meta.name} — Prelims Practice Simulator`;
+  }
+}
+
+async function boot() {
+  try {
+    await loadExamConfig();
+  } catch {
+    /* config optional — views handle their own fetch errors */
+  }
+  const switcher = document.getElementById('examSwitch');
+  if (switcher) {
+    switcher.value = currentExam();
+    switcher.addEventListener('change', () => {
+      setExam(switcher.value);
+      applyExamChrome(switcher.value);
+      redispatch();
+    });
+  }
+  // A ?exam= link overrides the stored preference — reflect it in the switch.
+  const urlExam = new URLSearchParams(location.hash.split('?')[1] || '').get('exam');
+  if (urlExam) switcher && (switcher.value = urlExam);
+  applyExamChrome(currentExam());
+  startRouter();
+}
+
+boot();

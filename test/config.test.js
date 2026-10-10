@@ -1,7 +1,7 @@
 import './helpers/env.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import CONFIG, { getPaper, yearRange, paperList } from '../config/exam.config.js';
+import CONFIG, { getPaper, yearRange, paperList, EXAMS } from '../config/exam.config.js';
 
 test('central config: paper structure matches UPSC prelims', () => {
   const gs = getPaper('GS1');
@@ -44,6 +44,32 @@ test('central config: full paper is Sunday-only', () => {
   assert.equal(CONFIG.FULL_PAPER.OPEN_MINUTE_AFTER_MIDNIGHT, 1);
 });
 
-test('papers list exposes exactly two separate papers', () => {
-  assert.equal(paperList().length, 2);
+test('papers registry: UPSC two papers + SSC four papers', () => {
+  assert.equal(Object.keys(EXAMS).length, 2);
+  assert.equal(paperList('UPSC_CSE_PRELIMS').length, 2);
+  assert.equal(paperList('SSC_CGL').length, 4);
+  assert.equal(paperList().length, 6);
+  assert.ok(paperList().every((p) => p.exam && EXAMS[p.exam]));
+});
+
+test('SSC CGL Tier-I matches the verified 2026 rules', () => {
+  const t1 = getPaper('SSC_T1');
+  assert.equal(t1.questionCount, 100);
+  assert.equal(t1.durationMinutes, 60);
+  assert.equal(t1.marks, 200);
+  assert.equal(t1.marksPerQuestion * t1.negativeFraction, 0.5); // −0.50 per wrong
+  assert.equal(t1.sectional.enabled, true);
+  assert.equal(t1.sectional.lock, true);
+  assert.equal(t1.sections.length, 4);
+  assert.ok(t1.sections.every((s) => s.questionCount === 25 && s.durationSeconds === 900));
+});
+
+test('SSC Tier-II Paper-I matches the verified 2026 Session-I rules', () => {
+  const p1 = getPaper('SSC_T2_P1');
+  assert.equal(p1.questionCount, 150);
+  assert.equal(p1.durationMinutes, 135);
+  assert.equal(p1.marksPerQuestion * p1.negativeFraction, 1); // −1 per wrong
+  assert.equal(p1.sections.length, 5);
+  assert.equal(p1.extraSessions[0].simulated, false); // DEST is not MCQ
+  assert.equal(p1.sectionQualification.status, 'REVIEW'); // thresholds not invented
 });

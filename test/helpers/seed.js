@@ -69,4 +69,43 @@ export function seedFixtures({ gsYears = 8, csatYears = 4, gsPerYear = 25, csatP
   return insertMany(items, { source: 'TEST FIXTURE' });
 }
 
-export { GS_SUBJECTS, CSAT_SUBJECTS };
+const SSC_T1_SUBJECTS = [
+  'General Intelligence & Reasoning', 'General Awareness',
+  'Quantitative Aptitude', 'English Comprehension',
+];
+
+function makeSscQuestion(year, number) {
+  const subject = SSC_T1_SUBJECTS[number % SSC_T1_SUBJECTS.length];
+  return {
+    year,
+    paper: 'SSC_T1',
+    question_number: number,
+    question_text: `[FIXTURE SSC] ${year} Q${number} regarding ${subject} — pick the correct option?`,
+    options: [
+      { key: 'A', text: 'Option one' },
+      { key: 'B', text: 'Option two' },
+      { key: 'C', text: 'Option three' },
+      { key: 'D', text: 'Option four' },
+    ],
+    correct_answer: ['A', 'B', 'C', 'D'][number % 4],
+    subject,
+    topic: `SSC ${subject} Topic ${number % 5}`,
+    difficulty: DIFFICULTIES[number % 3],
+    question_type: 'factual',
+    source_type: 'OFFICIAL_PYQ',
+    source: 'TEST FIXTURE — not a real SSC question',
+  };
+}
+
+export function seedSscFixtures({ t1Years = 3, perYear = 40 } = {}) {
+  const items = [];
+  for (let i = 0; i < t1Years; i += 1) {
+    const year = 2026 - i;
+    for (let n = 1; n <= perYear; n += 1) {
+      items.push(makeSscQuestion(year, n));
+    }
+  }
+  return insertMany(items, { source: 'TEST FIXTURE' });
+}
+
+export { GS_SUBJECTS, CSAT_SUBJECTS, SSC_T1_SUBJECTS };

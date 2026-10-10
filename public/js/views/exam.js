@@ -1,6 +1,7 @@
 import { get, post } from '../api.js';
 import { h, mount, fmtClock, fmtDuration, toast, confirmDialog, badgeForSourceType } from '../dom.js';
 import { navigate } from '../router.js';
+import { paperLabel } from '../exam-state.js';
 
 const OPTION_KEYS = ['A', 'B', 'C', 'D', 'E', 'F'];
 
@@ -10,6 +11,8 @@ const OPTION_KEYS = ['A', 'B', 'C', 'D', 'E', 'F'];
  *   sync; the browser only interpolates locally between syncs. A refresh never
  *   resets or extends time.
  * - Correct answers are never requested while the session is open.
+ * - Sectional papers (SSC Tier-I style): sections auto-lock at their server
+ *   deadline; closed sections reject answers (409) and cannot be revisited.
  */
 export default async function exam(view, params) {
   const sessionId = params.id;
@@ -28,6 +31,9 @@ export default async function exam(view, params) {
 
   const session = boot.session;
   let questions = boot.questions;
+  const sectional = Boolean(session.sectional && Array.isArray(session.sections) && session.sections.length);
+  let sections = sectional ? session.sections : null;
+  const sectionOf = session.config?.sectionOf || {};
   const answers = new Map(); // qid -> {answer, marked, visited, timeSpentSeconds}
   for (const a of boot.answers || []) {
     answers.set(a.question_id, {
@@ -49,12 +55,37 @@ export default async function exam(view, params) {
     const firstEmpty = questions.findIndex((q) => !ensure(q.id).answer);
     if (firstEmpty >= 0) index = firstEmpty;
   }
+  if (sectional && !isEditable(questions[index].id)) index = firstEditableIndex();
 
   /* ------------------------------------------------ server-synced clock */
   let remainingSeconds = Number(boot.remainingSeconds || 0);
   let syncedAt = Date.now();
+  let serverNowMs = boot.serverNow ? Date.parse(boot.serverNow) : Date.now();
   const syncIntervalMs = Math.max(5000, Number(boot.syncIntervalMs || 15000));
   const localRemaining = () => Math.max(0, remainingSeconds - Math.floor((Date.now() - syncedAt) / 1000));
+  const serverNow = () => serverNowMs + (Date.now() - syncedAt);
+
+  /* ------------------------------------------------ sectional clock (client
+     mirror of the server's cumulative deadlines; the server is authoritative
+     and rejects any save to a closed section). */
+  function sectionStateFor(questionId) {
+    if (!sectional) return null;
+    const secId = sectionOf[questionId];
+    if (!secId) return null;
+    const sec = sections.find((s) => s.id === secId);
+    if (!sec) return null;
+    const at = serverNow();
+    const state = at >= sec.endAt ? 'closed' : at >= sec.startAt ? 'open' : 'upcoming';
+    return { ...sec, state, remainingSeconds: state === 'open' ? Math.max(0, Math.round((sec.endAt - at) / 1000)) : 0 };
+  }
+  const isEditable = (questionId) => {
+    const st = sectionStateFor(questionId);
+    return !st || st.state === 'open';
+  };
+  const firstEditableIndex = () => {
+    const i = questions.findIndex((q) => isEditable(q.id));
+    return i >= 0 ? i : 0;
+  };
 
   /* ------------------------------------------------ save queue */
   const pending = new Map();
@@ -78,6 +109,15 @@ export default async function exam(view, params) {
       toast('Time is over — submitting…', 'error');
       stopAll();
       navigate(`/result/${sessionId}`);
+      return true;
+    }
+    if (err.code === 'SECTION_LOCKED' || err.code === 'SECTION_NOT_OPEN') {
+      toast(err.message, 'error');
+      const target = firstEditableIndex();
+      if (target !== index && isEditable(questions[target]?.id)) {
+        index = target;
+        renderAll();
+      }
       return true;
     }
     return false;
@@ -149,6 +189,7 @@ export default async function exam(view, params) {
   };
 
   const timerNode = h('div', { class: 'exam-timer mono', text: fmtClock(localRemaining()) });
+  const sectionTimerNode = sectional ? h('div', { class: 'exam-timer exam-timer-section mono' }) : null;
   const counterNode = h('div', { class: 'exam-counters' });
 
   function renderTop() {
@@ -156,6 +197,18 @@ export default async function exam(view, params) {
     const secs = localRemaining();
     timerNode.textContent = fmtClock(secs);
     timerNode.className = `exam-timer mono ${secs <= 60 ? 'critical' : secs <= 600 ? 'warning' : ''}`;
+    if (sectionTimerNode) {
+      const cur = sectionStateFor(questions[index]?.id);
+      if (cur && cur.state === 'open') {
+        const s = cur.remainingSeconds;
+        sectionTimerNode.textContent = `${cur.title}: ${fmtClock(s)}`;
+        sectionTimerNode.className = `exam-timer exam-timer-section mono ${s <= 60 ? 'critical' : s <= 180 ? 'warning' : ''}`;
+        sectionTimerNode.style.display = '';
+      } else {
+        sectionTimerNode.textContent = cur ? `${cur.title}: locked` : '';
+        sectionTimerNode.style.display = cur ? '' : 'none';
+      }
+    }
     counterNode.innerHTML = '';
     counterNode.append(
       h('span', {}, h('b', { text: String(c.answered) }), ' Answered'),
@@ -165,8 +218,9 @@ export default async function exam(view, params) {
     );
     examTop.innerHTML = '';
     examTop.append(
-      h('div', { class: 'exam-title' }, session.title, h('small', { text: `${session.kindLabel} · ${session.paper === 'GS1' ? 'GS Paper I' : 'CSAT'} · ${questions.length} questions` })),
+      h('div', { class: 'exam-title' }, session.title, h('small', { text: `${session.kindLabel} · ${paperLabel(session.paper)} · ${questions.length} questions${sectional ? ' · sectional (auto-lock)' : ''}` })),
       counterNode,
+      sectionTimerNode,
       timerNode,
     );
   }
@@ -186,17 +240,38 @@ export default async function exam(view, params) {
     return '';
   }
 
+  function sectionStrip() {
+    if (!sectional) return null;
+    return h(
+      'div',
+      { class: 'section-strip' },
+      ...sections.map((s) => {
+        const live = sectionStateFor(questions.find((q) => sectionOf[q.id] === s.id)?.id) || s;
+        const cls = live.state === 'open' ? 'sec-open' : live.state === 'closed' ? 'sec-closed' : 'sec-upcoming';
+        const timeText = live.state === 'open' ? fmtClock(live.remainingSeconds) : live.state === 'closed' ? 'LOCKED' : 'WAITING';
+        return h(
+          'div',
+          { class: `section-chip ${cls}` },
+          h('span', { class: 'section-chip-title', text: s.title || s.section || s.id }),
+          h('span', { class: 'section-chip-time mono', text: timeText }),
+        );
+      }),
+    );
+  }
+
   function renderPalette() {
     paletteBox.innerHTML = '';
     const c = counts();
     const palette = h('div', { class: 'palette', role: 'listbox', 'aria-label': 'Question palette' });
     questions.forEach((q, i) => {
+      const editable = isEditable(q.id);
       const btn = h(
         'button',
         {
-          class: `p-btn ${stateClass(q.id)} ${i === index ? 'current' : ''}`,
+          class: `p-btn ${stateClass(q.id)} ${i === index ? 'current' : ''} ${editable ? '' : 'state-locked'}`,
           type: 'button',
-          'aria-label': `Question ${i + 1}`,
+          disabled: !editable,
+          'aria-label': `Question ${i + 1}${editable ? '' : ' (section locked)'}`,
           'aria-current': i === index ? 'true' : 'false',
           onClick: () => go(i),
         },
@@ -206,6 +281,7 @@ export default async function exam(view, params) {
       palette.appendChild(btn);
     });
     paletteBox.append(
+      sectionStrip(),
       h('div', { class: 'palette-head', text: 'Question palette' }),
       palette,
       h('div', { class: 'palette-stats' },
@@ -218,6 +294,7 @@ export default async function exam(view, params) {
         h('div', { class: 'legend-item' }, h('span', { class: 'legend-swatch notanswered' }), 'Not answered ●'),
         h('div', { class: 'legend-item' }, h('span', { class: 'legend-swatch marked' }), 'Marked M'),
         h('div', { class: 'legend-item' }, h('span', { class: 'legend-swatch notvisited' }), 'Not visited'),
+        sectional ? h('div', { class: 'legend-item' }, h('span', { class: 'legend-swatch locked' }), 'Section locked') : null,
       ),
       h('div', { class: 'kbd-help' },
         h('div', { html: '<kbd>A</kbd>–<kbd>D</kbd> choose · <kbd>N</kbd>/<kbd>P</kbd> next/prev · <kbd>M</kbd> mark · <kbd>1</kbd>–<kbd>4</kbd> choose' }),
@@ -228,35 +305,42 @@ export default async function exam(view, params) {
   function renderQuestion() {
     const q = questions[index];
     const st = ensure(q.id);
+    const editable = isEditable(q.id);
     st.visited = true;
 
+    const secLive = sectionStateFor(q.id);
     const head = h('div', { class: 'exam-qhead' },
       h('div', { class: 'qno', text: `Question ${index + 1} / ${questions.length}` }),
-      h('div', { class: 'qmeta' }, badgeForSourceType(q.source_type), st.marked ? h('span', { class: 'badge badge-purple', text: 'Marked' }) : null),
+      h('div', { class: 'qmeta' },
+        badgeForSourceType(q.source_type),
+        secLive ? h('span', { class: `badge ${secLive.state === 'open' ? 'badge-good' : 'badge-neutral'}`, text: secLive.title || secLive.section || '' }) : null,
+        !editable ? h('span', { class: 'badge badge-neutral', text: secLive?.state === 'closed' ? 'Section locked' : 'Section not open' }) : null,
+        st.marked ? h('span', { class: 'badge badge-purple', text: 'Marked' }) : null,
+      ),
     );
 
     const options = h('div', { class: 'options', role: 'radiogroup', 'aria-label': 'Options' });
-    const keys = q.options.map((o) => String(o.key).toUpperCase());
     q.options.forEach((o) => {
       const key = String(o.key).toUpperCase();
       const selected = st.answer === key;
       const input = h('input', { type: 'radio', name: `q_${q.id}`, value: key });
       input.checked = selected;
+      if (!editable) input.disabled = true;
       const row = h(
         'label',
-        { class: `option ${selected ? 'selected' : ''}` },
+        { class: `option ${selected ? 'selected' : ''} ${editable ? '' : 'disabled'}` },
         input,
         h('span', { class: 'opt-key', text: key }),
         h('span', { class: 'opt-text', text: o.text ?? o.content ?? '' }),
       );
-      input.addEventListener('change', () => selectOption(key));
+      if (editable) input.addEventListener('change', () => selectOption(key));
       options.appendChild(row);
     });
 
     const actions = h('div', { class: 'exam-actions' },
       h('button', { class: 'btn', disabled: index === 0, onClick: () => go(index - 1) }, '← Previous'),
-      h('button', { class: 'btn', onClick: () => clearResponse() }, 'Clear response'),
-      h('button', { class: `btn ${st.marked ? 'btn-primary' : ''}`, onClick: () => toggleMark() }, st.marked ? 'Unmark (M)' : 'Mark for review (M)'),
+      h('button', { class: 'btn', disabled: !editable, onClick: () => clearResponse() }, 'Clear response'),
+      h('button', { class: `btn ${st.marked ? 'btn-primary' : ''}`, disabled: !editable, onClick: () => toggleMark() }, st.marked ? 'Unmark (M)' : 'Mark for review (M)'),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn', disabled: index === questions.length - 1, onClick: () => go(index + 1) }, 'Next →'),
       h('button', { class: 'btn btn-danger', onClick: confirmSubmit }, 'Submit test'),
@@ -269,10 +353,12 @@ export default async function exam(view, params) {
         q.passage ? h('div', { class: 'passage' }, q.passage) : null,
         h('div', { class: 'qtext', text: q.question_text }),
         options,
+        !editable && secLive?.state === 'closed'
+          ? h('div', { class: 'notice warn', text: `Section "${secLive.title}" closed at its deadline — answers can no longer be changed for its questions.` })
+          : null,
       ),
       actions,
     );
-    void keys;
   }
 
   function renderAll() {
@@ -284,6 +370,13 @@ export default async function exam(view, params) {
   /* ------------------------------------------------ interactions */
   function go(nextIndex) {
     if (nextIndex < 0 || nextIndex >= questions.length || nextIndex === index) return;
+    if (sectional && !isEditable(questions[nextIndex].id)) {
+      const st = sectionStateFor(questions[nextIndex].id);
+      toast(st?.state === 'closed'
+        ? 'That section is closed — it cannot be revisited.'
+        : 'That section has not started yet.', 'error');
+      return;
+    }
     bankTime();
     index = nextIndex;
     renderAll();
@@ -293,6 +386,7 @@ export default async function exam(view, params) {
 
   function selectOption(key) {
     const q = questions[index];
+    if (sectional && !isEditable(q.id)) return;
     const st = ensure(q.id);
     st.answer = st.answer === key ? null : key;
     st.visited = true;
@@ -303,6 +397,7 @@ export default async function exam(view, params) {
 
   function clearResponse() {
     const q = questions[index];
+    if (sectional && !isEditable(q.id)) return;
     const st = ensure(q.id);
     st.answer = null;
     renderAll();
@@ -311,6 +406,7 @@ export default async function exam(view, params) {
 
   function toggleMark() {
     const q = questions[index];
+    if (sectional && !isEditable(q.id)) return;
     const st = ensure(q.id);
     st.marked = !st.marked;
     renderAll();
@@ -350,6 +446,8 @@ export default async function exam(view, params) {
       const s = await get(`/api/sessions/${encodeURIComponent(sessionId)}`);
       remainingSeconds = Number(s.remainingSeconds || 0);
       syncedAt = Date.now();
+      if (s.serverNow) serverNowMs = Date.parse(s.serverNow);
+      if (sectional && Array.isArray(s.session?.sections)) sections = s.session.sections;
       if (s.autoSubmitted) {
         stopAll();
         toast('Time over — your paper was submitted automatically.', 'error');
@@ -366,8 +464,13 @@ export default async function exam(view, params) {
         const local = answers.get(a.question_id);
         if (!local) answers.set(a.question_id, { answer: a.answer, marked: a.marked, visited: a.visited, timeSpentSeconds: a.time_spent_seconds });
       }
+      if (sectional && !isEditable(questions[index].id)) {
+        const target = questions.findIndex((q) => isEditable(q.id));
+        if (target >= 0) index = target;
+      }
       renderTop();
       renderPalette();
+      renderQuestion();
     } catch (err) {
       if (handleSessionError(err)) return;
       // network hiccup: keep counting locally, retry next tick
@@ -383,9 +486,28 @@ export default async function exam(view, params) {
       stopAll();
       toast('Time over — submitting your answers…', 'error');
       doSubmit();
-    } else {
-      renderTop();
+      return;
     }
+    if (sectional) {
+      if (!isEditable(questions[index].id)) {
+        const target = questions.findIndex((q) => isEditable(q.id));
+        if (target >= 0) {
+          bankTime();
+          index = target;
+          toast('Section closed — moved you to the next open section.', 'error');
+          renderAll();
+          queueSave(questions[index].id, { immediate: true });
+          return;
+        }
+        // every section has closed: nothing left to attempt
+        stopAll();
+        toast('All sections are over — submitting…', 'error');
+        doSubmit();
+        return;
+      }
+    }
+    renderTop();
+    if (sectional) renderPalette();
   }, 1000);
 
   let syncTimer = setInterval(syncFromServer, syncIntervalMs);

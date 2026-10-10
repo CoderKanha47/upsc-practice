@@ -1,11 +1,13 @@
-import CONFIG, { yearRange, paperList } from '../../config/exam.config.js';
+import CONFIG, { yearRange, paperList, EXAMS, getExam, getPaper, DEFAULT_EXAM } from '../../config/exam.config.js';
 import { getDb } from '../db/database.js';
 import { masteryOverview } from './mastery.js';
 
 /**
  * ANALYTICS ENGINE
  * Answers: am I improving? which subjects/topics/types are weak? where do I
- * lose time? how much of the 20-year corpus have I actually mastered?
+ * lose time? how much of the corpus have I actually mastered?
+ * All queries accept an optional `exam` filter; the default exam keeps every
+ * legacy UPSC behaviour unchanged.
  */
 
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -14,7 +16,7 @@ function statRows(whereExtra = '', params = []) {
   const db = getDb();
   return db
     .prepare(
-      `SELECT q.id, q.year, q.paper, q.subject, q.topic, q.subtopic, q.difficulty,
+      `SELECT q.id, q.year, q.exam, q.paper, q.subject, q.topic, q.subtopic, q.difficulty,
               q.question_type, q.estimated_time_seconds, q.source_type, q.is_official_pyq,
               s.attempt_count, s.correct_count, s.incorrect_count, s.skipped_count,
               s.average_time_seconds, s.best_time_seconds, s.total_time_seconds,
@@ -74,17 +76,23 @@ function aggregate(rows, keyFn) {
     .sort((a, b) => b.accuracy - a.accuracy || b.attempted - a.attempted);
 }
 
-/** Dashboard-level numbers. */
-export function overview() {
-  const rows = statRows();
+/** Dashboard-level numbers (optionally scoped to one exam). */
+export function overview({ exam = null } = {}) {
+  const rows = exam ? statRows('AND q.exam = ?', [exam]) : statRows();
+  const sessionClauses = ["status != 'IN_PROGRESS'"];
+  const sessionParams = [];
+  if (exam) {
+    sessionClauses.push('exam = ?');
+    sessionParams.push(exam);
+  }
   const sessions = getDb()
     .prepare(
-      `SELECT id, mode, kind_label, paper, title, status, started_at, marks_obtained,
-              accuracy, attempted, correct, incorrect, unattempted, duration_seconds,
+      `SELECT id, mode, kind_label, paper, exam, title, status, started_at, marks_obtained,
+              total_marks, accuracy, attempted, correct, incorrect, unattempted, duration_seconds,
               time_used_seconds
-       FROM test_sessions WHERE status != 'IN_PROGRESS' ORDER BY started_at DESC`,
+       FROM test_sessions WHERE ${sessionClauses.join(' AND ')} ORDER BY started_at DESC`,
     )
-    .all();
+    .all(...sessionParams);
 
   const official = rows.filter((r) => r.source_type === 'OFFICIAL_PYQ');
   const attemptedOfficial = official.filter((r) => Number(r.attempt_count) > 0);
@@ -97,14 +105,17 @@ export function overview() {
   const strongest = eligible.length ? eligible.slice().sort((a, b) => b.accuracy - a.accuracy)[0] : null;
   const weakest = eligible.length ? eligible.slice().sort((a, b) => a.accuracy - b.accuracy)[0] : null;
 
-  const gsSessions = sessions.filter((s) => s.paper === 'GS1');
-  const avgScore = gsSessions.length
-    ? round1(gsSessions.reduce((s, x) => s + Number(x.accuracy || 0), 0) / gsSessions.length)
+  // Average full-paper score uses the exam's flagship paper (UPSC GS1, SSC Tier-I).
+  const flagPaper = exam ? getExam(exam).defaultPaper : 'GS1';
+  const flagSessions = sessions.filter((s) => s.paper === flagPaper);
+  const avgScore = flagSessions.length
+    ? round1(flagSessions.reduce((s, x) => s + Number(x.accuracy || 0), 0) / flagSessions.length)
     : null;
 
-  const mastery = masteryOverview();
+  const mastery = masteryOverview(exam ? { exam } : {});
 
   return {
+    exam: exam || DEFAULT_EXAM,
     pyqsAttempted: attemptedOfficial.length,
     pyqTotal: official.length,
     accuracy,
@@ -115,17 +126,27 @@ export function overview() {
     totalQuestionExposures: totalAttempts,
     mastery,
     recentSessions: sessions.slice(0, 8).map(s => ({
-      id: s.id, mode: s.mode, kindLabel: s.kind_label, paper: s.paper, title: s.title,
-      startedAt: s.started_at, marksObtained: s.marks_obtained, accuracy: s.accuracy,
-      attempted: s.attempted, correct: s.correct, incorrect: s.incorrect,
+      id: s.id, mode: s.mode, kindLabel: s.kind_label, paper: s.paper, exam: s.exam,
+      title: s.title, startedAt: s.started_at, marksObtained: s.marks_obtained,
+      accuracy: s.accuracy, attempted: s.attempted, correct: s.correct, incorrect: s.incorrect,
       unattempted: s.unattempted, timeUsedSeconds: s.time_used_seconds,
     })),
   };
 }
 
 /** Performance broken down by subject / topic / question type / difficulty. */
-export function performanceBy(dimension, { paper = null, minAttempts = 1 } = {}) {
-  const rows = statRows(paper ? 'AND q.paper = ?' : '', paper ? [paper] : []);
+export function performanceBy(dimension, { paper = null, exam = null, minAttempts = 1 } = {}) {
+  const clauses = [];
+  const params = [];
+  if (paper) {
+    clauses.push('AND q.paper = ?');
+    params.push(paper);
+  }
+  if (exam) {
+    clauses.push('AND q.exam = ?');
+    params.push(exam);
+  }
+  const rows = statRows(clauses.join(' '), params);
   const keyMap = { subject: (r) => r.subject, topic: (r) => r.topic, questionType: (r) => r.question_type, difficulty: (r) => r.difficulty };
   const fn = keyMap[dimension];
   if (!fn) {
@@ -185,25 +206,37 @@ export function timeAnalytics() {
 }
 
 /** Score trend across submitted tests — "Am I improving?" */
-export function trend(limit = 30) {
+export function trend(limit = 30, { exam = null, mode = null } = {}) {
+  const clauses = ["status != 'IN_PROGRESS'"];
+  const params = [];
+  if (exam) {
+    clauses.push('exam = ?');
+    params.push(exam);
+  }
+  if (mode) {
+    clauses.push('mode = ?');
+    params.push(mode);
+  }
   const sessions = getDb()
     .prepare(
-      `SELECT id, title, paper, mode, kind_label, started_at, accuracy, marks_obtained,
-              attempted, correct, incorrect, time_used_seconds
-       FROM test_sessions WHERE status != 'IN_PROGRESS'
+      `SELECT id, title, paper, exam, mode, kind_label, started_at, accuracy, marks_obtained,
+              total_marks, attempted, correct, incorrect, time_used_seconds
+       FROM test_sessions WHERE ${clauses.join(' AND ')}
        ORDER BY started_at DESC LIMIT ?`,
     )
-    .all(limit)
+    .all(...params, limit)
     .reverse();
   return sessions.map((s) => ({
     id: s.id,
     title: s.title,
     paper: s.paper,
+    exam: s.exam || DEFAULT_EXAM,
     mode: s.mode,
     kindLabel: s.kind_label,
     date: new Date(s.started_at).toISOString(),
     accuracy: Number(s.accuracy || 0),
     marksObtained: Number(s.marks_obtained || 0),
+    totalMarks: s.total_marks ?? null,
     attempted: s.attempted,
     correct: s.correct,
     incorrect: s.incorrect,
@@ -211,21 +244,82 @@ export function trend(limit = 30) {
   }));
 }
 
+/**
+ * Normalized (0–100 %) score series for the unified progress chart.
+ * Four series: UPSC Full Paper / UPSC Selective / SSC Full Paper / SSC Selective.
+ * Full Paper = FULL_EXACT + FULL_MIXED; Selective = SELECTIVE + PYQ_PRACTICE.
+ */
+const FULL_MODES = new Set(['FULL_EXACT', 'FULL_MIXED']);
+const SELECTIVE_MODES = new Set(['SELECTIVE', 'PYQ_PRACTICE']);
+const SERIES_DEFS = [
+  { id: 'UPSC_FULL', exam: 'UPSC_CSE_PRELIMS', kind: 'FULL', label: 'UPSC Full Paper' },
+  { id: 'UPSC_SELECTIVE', exam: 'UPSC_CSE_PRELIMS', kind: 'SELECTIVE', label: 'UPSC Selective' },
+  { id: 'SSC_FULL', exam: 'SSC_CGL', kind: 'FULL', label: 'SSC Full Paper' },
+  { id: 'SSC_SELECTIVE', exam: 'SSC_CGL', kind: 'SELECTIVE', label: 'SSC Selective' },
+];
+
+export function progressSeries({ exams = null, kinds = null, from = null, to = null, limit = 500 } = {}) {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, exam, mode, paper, title, started_at, marks_obtained, total_marks, accuracy
+       FROM test_sessions WHERE status != 'IN_PROGRESS'
+       ORDER BY started_at DESC LIMIT ?`,
+    )
+    .all(Math.min(2000, Number(limit) || 500));
+
+  const bySeries = new Map(SERIES_DEFS.map((s) => [s.id, { ...s, points: [] }]));
+  for (const r of rows) {
+    const examId = r.exam || DEFAULT_EXAM;
+    const kind = FULL_MODES.has(r.mode) ? 'FULL' : SELECTIVE_MODES.has(r.mode) ? 'SELECTIVE' : null;
+    if (!kind) continue;
+    const def = SERIES_DEFS.find((s) => s.exam === examId && s.kind === kind);
+    if (!def) continue;
+    if (exams?.length && !exams.includes(examId)) continue;
+    if (kinds?.length && !kinds.includes(kind)) continue;
+    const ts = r.started_at;
+    if (from && ts < from) continue;
+    if (to && ts > to) continue;
+    const total = Number(r.total_marks || 0);
+    const scorePercent = total > 0 ? round1((Number(r.marks_obtained || 0) / total) * 100) : round1(Number(r.accuracy || 0));
+    bySeries.get(def.id).points.push({
+      sessionId: r.id,
+      date: new Date(ts).toISOString(),
+      timestamp: ts,
+      paper: r.paper,
+      title: r.title,
+      marksObtained: Number(r.marks_obtained || 0),
+      totalMarks: total || null,
+      scorePercent,
+    });
+  }
+  for (const s of bySeries.values()) s.points.sort((a, b) => a.timestamp - b.timestamp);
+  return {
+    series: [...bySeries.values()],
+    note: 'Scores are normalized to percentage of the marks available in each test, so UPSC (200 marks) and SSC papers plot on one axis.',
+  };
+}
+
 /** PYQs the user has repeatedly failed — the learning loop entry point. */
-export function repeatedFailures(limit = 25) {
+export function repeatedFailures(limit = 25, { exam = null } = {}) {
   const db = getDb();
+  const clauses = ['s.incorrect_count >= 2', 'q.is_duplicate = 0'];
+  const params = [];
+  if (exam) {
+    clauses.push('q.exam = ?');
+    params.push(exam);
+  }
   return db
     .prepare(
-      `SELECT q.id, q.year, q.paper, q.question_number, q.question_text, q.subject, q.topic,
+      `SELECT q.id, q.year, q.exam, q.paper, q.question_number, q.question_text, q.subject, q.topic,
               q.question_type, q.difficulty, q.explanation, q.concept, q.source_type,
               s.attempt_count, s.correct_count, s.incorrect_count, s.consecutive_correct,
               s.last_attempted_at
        FROM question_stats s JOIN questions q ON q.id = s.question_id
-       WHERE s.incorrect_count >= 2 AND q.is_duplicate = 0
+       WHERE ${clauses.join(' AND ')}
        ORDER BY (s.incorrect_count - s.correct_count) DESC, s.incorrect_count DESC
        LIMIT ?`,
     )
-    .all(limit)
+    .all(...params, limit)
     .map((r) => ({
       ...r,
       mastery: false,
@@ -258,24 +352,26 @@ export function calibrationReport(limit = 40) {
     }));
 }
 
-/** 20-year corpus coverage: how much of 2007–2026 is actually in the DB? */
-export function coverage() {
+/** Corpus coverage per exam: how much of the configured year range is in the DB? */
+export function coverage(examId = DEFAULT_EXAM) {
   const db = getDb();
+  const exam = getExam(examId);
   const rows = db
     .prepare(
       `SELECT year, paper, COUNT(*) AS n,
               SUM(CASE WHEN correct_answer IS NOT NULL AND correct_answer != '' THEN 1 ELSE 0 END) AS keyed,
               SUM(CASE WHEN validation_state = 'VERIFIED' THEN 1 ELSE 0 END) AS verified
-       FROM questions WHERE is_duplicate = 0 AND source_type = 'OFFICIAL_PYQ'
+       FROM questions WHERE is_duplicate = 0 AND source_type = 'OFFICIAL_PYQ' AND exam = ?
        GROUP BY year, paper`,
     )
-    .all();
+    .all(exam.id);
   const index = new Map(rows.map((r) => [`${r.year}:${r.paper}`, r]));
   const years = [];
-  for (const year of yearRange()) {
-    const papers = {};
+  const papers = Object.values(exam.papers);
+  for (const year of yearRange(exam.id)) {
+    const papersMap = {};
     let complete = true;
-    for (const paper of paperList()) {
+    for (const paper of papers) {
       const r = index.get(`${year}:${paper.id}`);
       const expected = paper.questionCount;
       const found = r ? Number(r.n) : 0;
@@ -287,7 +383,7 @@ export function coverage() {
       else if (keyed < expected || verified < expected) status = 'PARTIAL';
       else status = 'VERIFIED';
       if (status !== 'VERIFIED') complete = false;
-      papers[paper.id] = {
+      papersMap[paper.id] = {
         title: paper.shortTitle,
         found,
         keyed,
@@ -297,20 +393,21 @@ export function coverage() {
         percent: Math.round((found / expected) * 100),
       };
     }
-    years.push({ year, papers, complete });
+    years.push({ year, papers: papersMap, complete });
   }
   const totals = rows.reduce(
     (acc, r) => ({ found: acc.found + Number(r.n), keyed: acc.keyed + Number(r.keyed) }),
     { found: 0, keyed: 0 },
   );
-  const expectedTotal = paperList().reduce((s, p) => s + p.questionCount, 0) * yearRange().length;
+  const expectedTotal = papers.reduce((s, p) => s + p.questionCount, 0) * yearRange(exam.id).length;
   return {
+    exam: exam.id,
     years,
     totals: {
       expected: expectedTotal,
       found: totals.found,
       keyed: totals.keyed,
-      percent: Math.round((totals.found / expectedTotal) * 1000) / 10,
+      percent: expectedTotal ? Math.round((totals.found / expectedTotal) * 1000) / 10 : 0,
     },
     note: 'DATA_MISSING years have not been imported. Nothing is ever invented — see Admin → Import to add official papers.',
   };
@@ -321,6 +418,7 @@ export default {
   performanceBy,
   timeAnalytics,
   trend,
+  progressSeries,
   repeatedFailures,
   calibrationReport,
   coverage,

@@ -47,7 +47,7 @@ function isNoise(line) {
  * @param {string} text raw text of one paper
  * @returns {{questions: Array, warnings: Array}}
  */
-export function parsePaperText(text, { paper = 'GS1', year = null, source = null } = {}) {
+export function parsePaperText(text, { paper = 'GS1', year = null, source = null, exam = null, tier = null, shift = null } = {}) {
   const warnings = [];
   const lines = String(text || '')
     .split(/\r?\n/)
@@ -182,6 +182,9 @@ export function parsePaperText(text, { paper = 'GS1', year = null, source = null
       group_index: b.group_index,
       paper,
       year,
+      exam,
+      tier,
+      shift,
       source,
       source_type: 'OFFICIAL_PYQ',
     };

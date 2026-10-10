@@ -1,4 +1,4 @@
-import CONFIG, { getPaper } from '../../config/exam.config.js';
+import CONFIG, { EXAMS, getPaper, paperList } from '../../config/exam.config.js';
 import { getDb, tx, now, newId, contentHash, toJson, audit } from '../db/database.js';
 import { estimateSeconds } from './timing.js';
 
@@ -31,7 +31,8 @@ export function validateQuestion(data) {
   if (!data.question_text || String(data.question_text).trim().length < 5) {
     errors.push('question_text is missing or too short');
   }
-  if (!['GS1', 'CSAT'].includes(data.paper)) errors.push(`invalid paper: ${data.paper}`);
+  const validPapers = new Set(paperList().map((p) => p.id));
+  if (!validPapers.has(data.paper)) errors.push(`invalid paper: ${data.paper}`);
 
   const options = normalizeOptions(data.options);
   if (options.length < 2) errors.push('at least two options are required');
@@ -66,6 +67,10 @@ export function dupKeyFor(data) {
   if (data.year === null || data.year === undefined || !data.paper || data.question_number === null || data.question_number === undefined) {
     return null;
   }
+  // Shift-wise SSC papers repeat question numbers across shifts, so the shift
+  // is part of the identity when present. UPSC (no shift) keeps the legacy
+  // `year|paper|number` key so existing rows stay unique-compatible.
+  if (data.shift) return `${data.year}|${data.paper}|${data.shift}|${data.question_number}`;
   return `${data.year}|${data.paper}|${data.question_number}`;
 }
 
@@ -142,17 +147,19 @@ export function insertQuestion(raw, { batchId = null, source = null } = {}) {
 
   db.prepare(
     `INSERT INTO questions
-      (id, year, exam, paper, question_number, question_text, passage, group_id, group_index,
+      (id, year, exam, paper, tier, shift, question_number, question_text, passage, group_id, group_index,
        options_json, correct_answer, subject, topic, subtopic, difficulty, question_type,
        estimated_time_seconds, marks, negative_marks, source, source_type, is_official_pyq,
        validation_state, is_duplicate, dup_key, content_hash, explanation, concept,
        tags_json, batch_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     data.year ?? null,
-    data.exam || 'CSE_PRELIMS',
+    data.exam || paper.exam,
     data.paper,
+    data.tier || paper.tier || null,
+    data.shift || null,
     data.question_number ?? null,
     String(data.question_text).trim(),
     data.passage || null,
@@ -360,7 +367,7 @@ export function deleteQuestion(id, { actor = 'admin' } = {}) {
   return { deleted: true, id };
 }
 
-/** Recompute the paper coverage registry (drives the PYQ explorer). */
+/** Recompute the paper coverage registry (drives the PYQ explorer), for every exam. */
 export function refreshCoverage() {
   const db = getDb();
   const rows = db
@@ -374,25 +381,30 @@ export function refreshCoverage() {
     .all();
   const index = new Map(rows.map((r) => [`${r.year}:${r.paper}`, r]));
   const at = now();
-  for (let y = CONFIG.YEARS.START_YEAR; y <= CONFIG.YEARS.END_YEAR; y += 1) {
-    for (const paper of Object.values(CONFIG.PAPERS)) {
-      const r = index.get(`${y}:${paper.id}`);
-      const found = r ? Number(r.n) : 0;
-      const keyed = r ? Number(r.keyed) : 0;
-      const verified = r ? Number(r.verified) : 0;
-      let status = 'DATA_MISSING';
-      if (found > 0 && keyed === 0) status = 'REQUIRES_VERIFICATION';
-      else if (found > 0 && (keyed < paper.questionCount || verified < paper.questionCount)) status = 'PARTIAL';
-      else if (found > 0 && keyed >= paper.questionCount && verified >= paper.questionCount) status = 'VERIFIED';
-      else if (found > 0) status = 'IMPORTED';
-      db.prepare(
-        `INSERT INTO paper_coverage (year, paper, status, official_count, verified_count, keyed_count, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(year, paper) DO UPDATE SET
-           status = excluded.status, official_count = excluded.official_count,
-           verified_count = excluded.verified_count, keyed_count = excluded.keyed_count,
-           updated_at = excluded.updated_at`,
-      ).run(y, paper.id, status, found, verified, keyed, at);
+  for (const exam of Object.values(EXAMS)) {
+    const startYear = exam.years.START_YEAR;
+    const endYear = exam.years.END_YEAR;
+    for (let y = startYear; y <= endYear; y += 1) {
+      for (const paper of Object.values(exam.papers)) {
+        const r = index.get(`${y}:${paper.id}`);
+        const found = r ? Number(r.n) : 0;
+        const keyed = r ? Number(r.keyed) : 0;
+        const verified = r ? Number(r.verified) : 0;
+        let status = 'DATA_MISSING';
+        if (found > 0 && keyed === 0) status = 'REQUIRES_VERIFICATION';
+        else if (found > 0 && (keyed < paper.questionCount || verified < paper.questionCount)) status = 'PARTIAL';
+        else if (found > 0 && keyed >= paper.questionCount && verified >= paper.questionCount) status = 'VERIFIED';
+        else if (found > 0) status = 'IMPORTED';
+        db.prepare(
+          `INSERT INTO paper_coverage (year, paper, exam, tier, shift, status, official_count, verified_count, keyed_count, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(year, paper) DO UPDATE SET
+             exam = excluded.exam, tier = excluded.tier, shift = excluded.shift,
+             status = excluded.status, official_count = excluded.official_count,
+             verified_count = excluded.verified_count, keyed_count = excluded.keyed_count,
+             updated_at = excluded.updated_at`,
+        ).run(y, paper.id, exam.id, paper.tier || null, paper.shift || null, status, found, verified, keyed, at);
+      }
     }
   }
 }
@@ -409,6 +421,10 @@ export function searchQuestions(filters = {}, { page = 1, pageSize = 25 } = {}) 
   if (filters.paper) {
     clauses.push('paper = ?');
     params.push(filters.paper);
+  }
+  if (filters.exam) {
+    clauses.push('exam = ?');
+    params.push(filters.exam);
   }
   if (filters.year) {
     clauses.push('year = ?');

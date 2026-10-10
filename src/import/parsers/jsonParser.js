@@ -41,6 +41,9 @@ export function parseJsonPayload(content) {
   const meta = {
     year: data.year ?? null,
     paper: data.paper ?? null,
+    exam: data.exam ?? null,
+    tier: data.tier ?? null,
+    shift: data.shift ?? null,
     source: data.source ?? null,
     source_type: data.source_type ?? 'OFFICIAL_PYQ',
   };
@@ -59,6 +62,9 @@ export function parseJsonPayload(content) {
     ...q,
     year: q.year ?? meta.year,
     paper: q.paper ?? meta.paper,
+    exam: q.exam ?? meta.exam,
+    tier: q.tier ?? meta.tier,
+    shift: q.shift ?? meta.shift,
     source: q.source ?? meta.source,
     source_type: q.source_type ?? meta.source_type,
     question_number: q.question_number ?? i + 1,

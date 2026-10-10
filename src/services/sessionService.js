@@ -1,6 +1,6 @@
-import CONFIG, { getPaper } from '../../config/exam.config.js';
+import CONFIG, { getPaper, examOfPaper } from '../../config/exam.config.js';
 import { getDb, tx, now, newId, toJson, parseJson } from '../db/database.js';
-import { scoreSubmission, csatQualification, gsCutoffEstimate } from './scoring.js';
+import { scoreSubmission, resultQualification } from './scoring.js';
 
 /**
  * EXAM SESSION SERVICE
@@ -8,6 +8,11 @@ import { scoreSubmission, csatQualification, gsCutoffEstimate } from './scoring.
  * A session owns the clock. The server stores started_at + deadline_at; the
  * client only ever *displays* remaining time received from the server, so a
  * refresh, a closed tab or a manipulated client cannot reset or extend time.
+ *
+ * Sectional papers (SSC Tier-I/Tier-II Paper-I) additionally store a section
+ * plan in config_json: { sections, sectionOf }. Section clocks are derived
+ * server-side from started_at + cumulative durations; once a section closes it
+ * is locked — answers to its questions are rejected.
  *
  * Correct answers and explanations are NEVER sent to the browser before the
  * session is submitted.
@@ -28,6 +33,7 @@ export function createSession({
   mode,
   kindLabel,
   paper,
+  exam = null,
   title,
   questionIds,
   durationSeconds,
@@ -38,16 +44,25 @@ export function createSession({
   const db = getDb();
   const id = newId('sess');
   const deadline = startedAt + durationSeconds * 1000;
+  let examId = exam;
+  if (!examId) {
+    try {
+      examId = examOfPaper(paper).id;
+    } catch {
+      examId = 'UPSC_CSE_PRELIMS';
+    }
+  }
   db.prepare(
     `INSERT INTO test_sessions
-      (id, mode, kind_label, paper, title, status, config_json, question_ids_json,
+      (id, mode, kind_label, paper, exam, title, status, config_json, question_ids_json,
        seed, started_at, duration_seconds, deadline_at, created_at)
-     VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     mode,
     kindLabel,
     paper,
+    examId,
     title,
     toJson(config),
     toJson(questionIds),
@@ -69,7 +84,7 @@ export function getSession(id) {
   return rowToSession(row);
 }
 
-export function listSessions({ limit = 20, status = null, mode = null } = {}) {
+export function listSessions({ limit = 20, status = null, mode = null, exam = null } = {}) {
   const clauses = [];
   const params = [];
   if (status) {
@@ -79,6 +94,10 @@ export function listSessions({ limit = 20, status = null, mode = null } = {}) {
   if (mode) {
     clauses.push('mode = ?');
     params.push(mode);
+  }
+  if (exam) {
+    clauses.push('exam = ?');
+    params.push(exam);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return getDb()
@@ -95,6 +114,58 @@ export function activeSessions() {
 
 export function remainingSeconds(session, at = now()) {
   return Math.max(0, Math.round((session.deadline_at - at) / 1000));
+}
+
+/**
+ * Server-derived sectional clock. Section deadlines are cumulative sums of the
+ * configured durations starting at session.started_at. A closed section is
+ * locked: no answer to one of its questions is accepted afterwards.
+ * Returns null for non-sectional sessions.
+ */
+export function sectionStates(session, at = now()) {
+  const sections = session.config?.sections;
+  if (!Array.isArray(sections) || sections.length === 0) return null;
+  let cursor = session.started_at;
+  return sections.map((s) => {
+    const startAt = cursor;
+    const endAt = startAt + Number(s.durationSeconds || 0) * 1000;
+    cursor = endAt;
+    const state = at >= endAt ? 'closed' : at >= startAt ? 'open' : 'upcoming';
+    return {
+      id: s.id,
+      section: s.section || null,
+      title: s.title,
+      questionCount: s.questionCount ?? null,
+      marks: s.marks ?? null,
+      qualifying: Boolean(s.qualifying),
+      durationSeconds: s.durationSeconds,
+      startAt,
+      endAt,
+      state,
+      remainingSeconds: state === 'open' ? Math.max(0, Math.round((endAt - at) / 1000)) : 0,
+    };
+  });
+}
+
+function sectionIdOf(session, questionId) {
+  return session.config?.sectionOf?.[questionId] || null;
+}
+
+function assertSectionEditable(session, questionId, at = now()) {
+  const states = sectionStates(session, at);
+  if (!states) return;
+  const sectionId = sectionIdOf(session, questionId);
+  if (!sectionId) return;
+  const state = states.find((s) => s.id === sectionId);
+  if (!state || state.state === 'open') return;
+  const err = new Error(
+    state.state === 'closed'
+      ? `Section "${state.title}" is closed and cannot be revisited.`
+      : `Section "${state.title}" has not started yet.`,
+  );
+  err.status = 409;
+  err.code = state.state === 'closed' ? 'SECTION_LOCKED' : 'SECTION_NOT_OPEN';
+  throw err;
 }
 
 /** Questions in exam-safe form: no answers, no explanations, no classifications. */
@@ -127,6 +198,7 @@ export function playableQuestions(session) {
         options,
         source_type: r.source_type,
         is_official_pyq: Boolean(r.is_official_pyq),
+        section_id: sectionIdOf(session, r.id),
       };
     })
     .filter(Boolean);
@@ -183,6 +255,7 @@ export function saveAnswer(sessionId, { questionId, answer = null, timeSpentSeco
     err.status = 400;
     throw err;
   }
+  assertSectionEditable(session, questionId);
 
   let normalized = null;
   if (answer !== null && answer !== undefined && answer !== '') {
@@ -345,6 +418,8 @@ export function submitSession(sessionId, { auto = false } = {}) {
 
   const scored = scoreSubmission(session.paper, questions, scoreAnswers, CONFIG);
   const paper = getPaper(session.paper);
+  // Actual maximum for THIS session (selective sets are shorter than a full paper).
+  const totalMarksPossible = questions.reduce((s, q) => s + Number(q.marks || 0), 0);
 
   const timeUsed = Math.min(
     session.duration_seconds,
@@ -356,7 +431,7 @@ export function submitSession(sessionId, { auto = false } = {}) {
     db.prepare(
       `UPDATE test_sessions SET status = ?, submitted_at = ?, attempted = ?, correct = ?,
          incorrect = ?, unattempted = ?, marks_obtained = ?, negative_marks = ?,
-         accuracy = ?, time_used_seconds = ?
+         total_marks = ?, accuracy = ?, time_used_seconds = ?
        WHERE id = ?`,
     ).run(
       auto ? 'AUTO_SUBMITTED' : 'SUBMITTED',
@@ -367,6 +442,7 @@ export function submitSession(sessionId, { auto = false } = {}) {
       scored.unattempted,
       scored.marksObtained,
       scored.negativeMarks,
+      totalMarksPossible,
       scored.accuracy,
       timeUsed,
       sessionId,
@@ -420,11 +496,13 @@ export function syncSession(sessionId) {
 
 /** Session metadata that is safe to expose while the test is running. */
 export function publicSession(s) {
+  const sections = sectionStates(s);
   return {
     id: s.id,
     mode: s.mode,
     kindLabel: s.kind_label,
     paper: s.paper,
+    exam: s.exam || 'UPSC_CSE_PRELIMS',
     title: s.title,
     status: s.status,
     started_at: s.started_at,
@@ -432,8 +510,12 @@ export function publicSession(s) {
     deadline_at: s.deadline_at,
     submitted_at: s.submitted_at,
     questionCount: s.question_ids.length,
+    total_marks: s.total_marks ?? null,
     config: s.config,
     seed: s.seed,
+    sectional: Boolean(sections),
+    sections,
+    currentSectionId: sections ? (sections.find((x) => x.state === 'open')?.id ?? null) : null,
   };
 }
 
@@ -526,10 +608,11 @@ export function buildResult(sessionId) {
       questionCount: paper.questionCount,
       qualifying: paper.qualifying,
       durationMinutes: paper.durationMinutes,
+      sectional: Boolean(paper.sectional?.enabled),
     },
     score: {
       marksObtained: scored.marksObtained,
-      totalMarks: paper.marks,
+      totalMarks: session.total_marks ?? paper.marks,
       attempted: scored.attempted,
       correct: scored.correct,
       incorrect: scored.incorrect,
@@ -541,14 +624,58 @@ export function buildResult(sessionId) {
       timeRemainingSeconds: timeRemaining,
       autoSubmitted: session.status === 'AUTO_SUBMITTED',
     },
-    qualification: paper.qualifying
-      ? csatQualification(scored.marksObtained, session.paper, CONFIG)
-      : gsCutoffEstimate(scored.marksObtained, CONFIG),
+    qualification: resultQualification(scored.marksObtained, session.paper, CONFIG),
     review,
     distribution: reviewBreakdown(review),
+    sections: sectionBreakdown(session, scored),
     time: timeBreakdown(review),
   };
   return result;
+}
+
+/**
+ * Per-section score breakdown for sectional papers. Question → section mapping
+ * comes from the session config (set at creation from the paper definition).
+ */
+function sectionBreakdown(session, scored) {
+  const sections = session.config?.sections;
+  if (!Array.isArray(sections) || sections.length === 0) return null;
+  const sectionOf = session.config?.sectionOf || {};
+  const stats = new Map(
+    sections.map((s) => [
+      s.id,
+      {
+        id: s.id,
+        section: s.section || null,
+        title: s.title,
+        configuredQuestionCount: s.questionCount ?? null,
+        marks: s.marks ?? null,
+        qualifying: Boolean(s.qualifying),
+        total: 0,
+        attempted: 0,
+        correct: 0,
+        incorrect: 0,
+        unattempted: 0,
+        marksObtained: 0,
+      },
+    ]),
+  );
+  for (const p of scored.perQuestion) {
+    const sectionId = sectionOf[p.question_id];
+    const bucket = sectionId ? stats.get(sectionId) : null;
+    if (!bucket) continue;
+    bucket.total += 1;
+    if (p.result === 'correct') bucket.correct += 1;
+    else if (p.result === 'incorrect') bucket.incorrect += 1;
+    else bucket.unattempted += 1;
+    if (p.result !== 'unattempted') bucket.attempted += 1;
+    bucket.marksObtained = Math.round((bucket.marksObtained + p.net) * 100) / 100;
+  }
+  return [...stats.values()].map((b) => ({
+    ...b,
+    marksObtained: Math.round(b.marksObtained * 100) / 100,
+    accuracy: b.attempted ? Math.round((b.correct / b.attempted) * 100) : 0,
+  }));
 }
 
 function reviewBreakdown(review) {
@@ -619,5 +746,6 @@ export default {
   buildResult,
   playableQuestions,
   remainingSeconds,
+  sectionStates,
   publicSession,
 };

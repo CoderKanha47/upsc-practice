@@ -1,23 +1,30 @@
 import { get } from '../api.js';
-import { h, mount, loadingBox, fmtPct, fmtDuration, fmtDate, bar, toast } from '../dom.js';
+import { h, mount, loadingBox, fmtPct, fmtDuration, bar } from '../dom.js';
 import { navigate } from '../router.js';
+import { getExamMeta, papersForExam, paperLabel } from '../exam-state.js';
 
-export default async function analytics(view) {
+export default async function analytics(view, params, query) {
   mount(view, loadingBox('Crunching your numbers…'));
+  const examId = query?.exam;
+  const examMeta = getExamMeta(examId);
+  const papers = papersForExam(examId);
+  const qExam = `exam=${encodeURIComponent(examId)}`;
   let overview;
   let time;
   let trend;
   let failures;
   let calibration;
   let mastery;
+  let progress;
   try {
-    [overview, time, trend, failures, calibration, mastery] = await Promise.all([
-      get('/api/analytics/overview'),
+    [overview, time, trend, failures, calibration, mastery, progress] = await Promise.all([
+      get(`/api/analytics/overview?${qExam}`),
       get('/api/analytics/time'),
-      get('/api/analytics/trend'),
-      get('/api/analytics/failures'),
+      get(`/api/analytics/trend?${qExam}`),
+      get(`/api/analytics/failures?${qExam}`),
       get('/api/analytics/calibration'),
-      get('/api/analytics/mastery'),
+      get(`/api/analytics/mastery?${qExam}`),
+      get('/api/analytics/progress'),
     ]);
   } catch (err) {
     mount(view, h('div', { class: 'empty' }, h('strong', { text: 'Cannot load analytics' }), h('div', { text: err.message })));
@@ -63,6 +70,92 @@ export default async function analytics(view) {
     );
   }
 
+  /* ------------------------------------------------ progress chart (4 series) */
+  const SERIES_COLORS = {
+    UPSC_FULL: 'var(--navy)',
+    UPSC_SELECTIVE: 'var(--info-text)',
+    SSC_FULL: 'var(--accent)',
+    SSC_SELECTIVE: 'var(--purple)',
+  };
+  const allSeries = progress?.series || [];
+  const hiddenSeries = new Set();
+
+  function renderProgress() {
+    const anyPoints = allSeries.some((s) => s.points?.length);
+    const legend = h('div', { class: 'progress-legend' },
+      ...allSeries.map((s) => {
+        const btn = h('button', {
+          class: `legend-toggle ${hiddenSeries.has(s.id) ? 'off' : ''}`,
+          type: 'button',
+          onClick: () => {
+            if (hiddenSeries.has(s.id)) hiddenSeries.delete(s.id);
+            else hiddenSeries.add(s.id);
+            redraw();
+          },
+        },
+          h('span', { class: 'legend-dot', style: { background: SERIES_COLORS[s.id] || 'var(--muted)' } }),
+          h('span', { text: `${s.label} (${s.points?.length || 0})` }),
+        );
+        return btn;
+      }),
+    );
+
+    const chartSlot = h('div', {});
+    function drawChart() {
+      const active = allSeries.filter((s) => !hiddenSeries.has(s.id));
+      chartSlot.innerHTML = '';
+      if (!anyPoints) {
+        chartSlot.appendChild(h('div', { class: 'empty' }, h('strong', { text: 'No submitted tests yet' }), h('div', { text: 'Score-normalised progress appears after your first submitted test in each mode.' })));
+        return;
+      }
+      const w = 760;
+      const hgt = 180;
+      const pad = 30;
+      const max = 100;
+      const totalPoints = active.reduce((n, s) => n + (s.points?.length || 0), 0);
+      const x = (i, len) => pad + (i * (w - pad * 2)) / Math.max(1, len - 1);
+      const y = (v) => hgt - pad - (Math.min(max, Math.max(0, v)) / max) * (hgt - pad * 2);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', `0 0 ${w} ${hgt}`);
+      svg.setAttribute('class', 'trend-chart');
+      let inner = `
+        <line class="axis" x1="${pad}" y1="${y(0)}" x2="${w - pad}" y2="${y(0)}"></line>
+        <line class="axis" x1="${pad}" y1="${y(50)}" x2="${w - pad}" y2="${y(50)}" stroke-dasharray="4 4"></line>
+        <line class="axis" x1="${pad}" y1="${y(100)}" x2="${w - pad}" y2="${y(100)}" stroke-dasharray="2 6"></line>
+      `;
+      for (const s of active) {
+        const pts = s.points || [];
+        if (!pts.length) continue;
+        const color = SERIES_COLORS[s.id] || '#888';
+        const coords = pts.map((p, i) => `${x(i, pts.length)},${y(p.scorePercent ?? 0)}`).join(' ');
+        if (pts.length > 1) inner += `<polyline points="${coords}" style="fill:none;stroke:${color};stroke-width:2"></polyline>`;
+        inner += pts.map((p, i) =>
+          `<circle cx="${x(i, pts.length)}" cy="${y(p.scorePercent ?? 0)}" r="3.5" style="fill:${color}"><title>${s.label} · ${p.title}: ${p.scorePercent ?? 0}% (${p.marksObtained}/${p.totalMarks ?? '?'})</title></circle>`,
+        ).join('');
+      }
+      svg.innerHTML = inner;
+      chartSlot.appendChild(h('div', { class: 'table-wrap' }, svg));
+      if (!totalPoints) chartSlot.appendChild(h('div', { class: 'muted', style: { fontSize: '.8rem' }, text: 'No points in the selected series.' }));
+    }
+    function redraw() {
+      legend.querySelectorAll('.legend-toggle').forEach((b) => b.classList.remove('off'));
+      allSeries.forEach((s, i) => {
+        if (hiddenSeries.has(s.id)) legend.querySelectorAll('.legend-toggle')[i]?.classList.add('off');
+      });
+      drawChart();
+    }
+    drawChart();
+    return h('div', {}, legend, chartSlot);
+  }
+
+  const progressCard = h('div', { class: 'card' },
+    h('div', { class: 'card-title' },
+      h('h2', { text: 'Progress by mode' }),
+      h('span', { class: 'muted', style: { fontSize: '.82rem' }, text: 'score % normalised · Full Paper vs Selective, per exam' }),
+    ),
+    renderProgress(),
+  );
+
   /* ------------------------------------------------------ performance table */
   let dimension = 'subject';
   let perfPaper = '';
@@ -72,7 +165,7 @@ export default async function analytics(view) {
     perfBody.innerHTML = '';
     perfBody.appendChild(loadingBox());
     try {
-      const q = new URLSearchParams({ dimension, minAttempts: '3' });
+      const q = new URLSearchParams({ dimension, minAttempts: '3', exam: examId });
       if (perfPaper) q.set('paper', perfPaper);
       const data = await get(`/api/analytics/performance?${q}`);
       perfBody.innerHTML = '';
@@ -127,12 +220,12 @@ export default async function analytics(view) {
       }, d === 'questionType' ? 'Question type' : d[0].toUpperCase() + d.slice(1)),
     ),
     h('select', {
-      style: { maxWidth: '160px' },
+      style: { maxWidth: '180px' },
       onChange: (e) => {
         perfPaper = e.target.value;
         loadPerf();
       },
-    }, h('option', { value: '' }, 'All papers'), h('option', { value: 'GS1' }, 'GS Paper I'), h('option', { value: 'CSAT' }, 'CSAT')),
+    }, h('option', { value: '' }, 'All papers'), ...papers.map((p) => h('option', { value: p.id }, p.shortTitle))),
   );
   loadPerf();
 
@@ -226,7 +319,7 @@ export default async function analytics(view) {
     view,
     h('div', { class: 'row-between', style: { marginBottom: '1rem' } },
       h('div', {},
-        h('h1', { text: 'Analytics' }),
+        h('h1', { text: `${examMeta?.name || 'Exam'} · Analytics` }),
         h('div', { class: 'muted', text: 'Am I improving? Where do I lose marks and time?' }),
       ),
       h('div', { class: 'btn-row' }, h('a', { class: 'btn', href: '#/' }, 'Dashboard'), h('a', { class: 'btn', href: '#/pyq' }, 'PYQ Explorer')),
@@ -235,11 +328,12 @@ export default async function analytics(view) {
     h('div', { class: 'grid grid-4' },
       tile('Accuracy', fmtPct(overview.accuracy), `${overview.totalQuestionExposures} exposures`, overview.accuracy >= 60 ? 'good' : 'warn'),
       tile('Tests taken', String(overview.totalTests), 'submitted'),
-      tile('Average GS score', overview.averageScorePercent !== null ? fmtPct(overview.averageScorePercent) : '—', 'GS Paper I tests'),
+      tile('Average score', overview.averageScorePercent !== null ? fmtPct(overview.averageScorePercent) : '—', `${paperLabel(examMeta?.defaultPaper)} tests`),
       tile('Best subject', overview.strongestSubject ? overview.strongestSubject.name : '—', overview.strongestSubject ? fmtPct(overview.strongestSubject.accuracy, 0) : 'needs 3+ attempts'),
     ),
 
     chart,
+    progressCard,
     h('section', { class: 'card section-gap' },
       h('div', { class: 'card-title' }, h('h2', { text: 'Performance breakdown' })),
       dimPills,
@@ -248,5 +342,4 @@ export default async function analytics(view) {
     h('section', { class: 'grid grid-2 section-gap' }, timeCard, masteryCard),
     h('section', { class: 'grid grid-2 section-gap' }, failCard, calibCard),
   );
-  void toast;
 }
