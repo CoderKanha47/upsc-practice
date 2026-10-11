@@ -70,15 +70,58 @@ export default async function analytics(view, params, query) {
     );
   }
 
-  /* ------------------------------------------------ progress chart (4 series) */
+  /* ------------------------------------------- progress chart (6 series) */
+  // Six independent series: UPSC full/selective plus SSC Tier-I and Tier-II,
+  // each split by full paper vs selective practice.
   const SERIES_COLORS = {
     UPSC_FULL: 'var(--navy)',
     UPSC_SELECTIVE: 'var(--info-text)',
-    SSC_FULL: 'var(--accent)',
-    SSC_SELECTIVE: 'var(--purple)',
+    SSC_T1_FULL: 'var(--accent)',
+    SSC_T1_SELECTIVE: 'var(--purple)',
+    SSC_T2_FULL: '#b45309',
+    SSC_T2_SELECTIVE: '#0e7490',
   };
-  const allSeries = progress?.series || [];
+  let allSeries = progress?.series || [];
   const hiddenSeries = new Set();
+
+  const fTier = h('select', { class: 'sm' },
+    h('option', { value: '' }, 'All tiers'),
+    h('option', { value: 'UPSC' }, 'UPSC'),
+    h('option', { value: 'SSC' }, 'SSC'),
+    h('option', { value: 'TIER_I' }, 'SSC Tier-I'),
+    h('option', { value: 'TIER_II' }, 'SSC Tier-II'),
+  );
+  const fMode = h('select', { class: 'sm' },
+    h('option', { value: '' }, 'Full + selective'),
+    h('option', { value: 'FULL' }, 'Full paper only'),
+    h('option', { value: 'SELECTIVE' }, 'Selective only'),
+  );
+  const fFrom = h('input', { type: 'date', class: 'sm' });
+  const fTo = h('input', { type: 'date', class: 'sm' });
+  const fApply = h('button', { class: 'btn btn-sm', type: 'button', text: 'Apply' });
+  const fNote = h('span', { class: 'muted', style: { fontSize: '.76rem' } });
+  const fError = h('div', { class: 'notice warn', style: { display: 'none' } });
+
+  async function applyProgressFilters() {
+    fError.style.display = 'none';
+    const q = new URLSearchParams();
+    if (fTier.value) q.set('tiers', fTier.value);
+    if (fMode.value) q.set('modes', fMode.value);
+    if (fFrom.value) q.set('from', fFrom.value);
+    if (fTo.value) q.set('to', fTo.value);
+    try {
+      const data = await get(`/api/analytics/progress?${q}`);
+      allSeries = data.series || [];
+      progress.absentCount = data.absentCount;
+      hiddenSeries.clear();
+      redraw();
+      fNote.textContent = data.note ? ` · ${data.note}` : '';
+    } catch (err) {
+      fError.textContent = err.message;
+      fError.style.display = '';
+    }
+  }
+  fApply.addEventListener('click', applyProgressFilters);
 
   function renderProgress() {
     const anyPoints = allSeries.some((s) => s.points?.length);
@@ -151,8 +194,14 @@ export default async function analytics(view, params, query) {
   const progressCard = h('div', { class: 'card' },
     h('div', { class: 'card-title' },
       h('h2', { text: 'Progress by mode' }),
-      h('span', { class: 'muted', style: { fontSize: '.82rem' }, text: 'score % normalised · Full Paper vs Selective, per exam' }),
+      h('span', { class: 'muted', style: { fontSize: '.82rem' }, text: 'score % normalised · Full Paper vs Selective, per exam and SSC tier' }),
     ),
+    h('div', { class: 'pill-group', style: { marginBottom: '.5rem' } },
+      fTier, fMode, fFrom, fTo, fApply,
+      h('span', { class: 'muted', style: { fontSize: '.76rem' }, text: progress.absentCount ? `· ${progress.absentCount} ABSENT session(s) excluded` : '· no ABSENT sessions' }),
+      fNote,
+    ),
+    fError,
     renderProgress(),
   );
 

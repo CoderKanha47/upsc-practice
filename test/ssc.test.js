@@ -29,7 +29,11 @@ test('schema: fresh DB has no paper CHECK and is at SCHEMA_VERSION', () => {
   const db = getDb();
   const sql = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'questions'").get().sql;
   assert.ok(!/\bpaper\b\s+TEXT\s+NOT\s+NULL\s+CHECK/i.test(sql.replace(/\s+/g, ' ')));
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+  const sessCols = db.prepare('PRAGMA table_info(test_sessions)').all().map((c) => c.name);
+  assert.ok(sessCols.includes('cycle_id'), 'test_sessions.cycle_id present after v3 migration');
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+  assert.ok(tables.includes('ssc_cycles') && tables.includes('ssc_cutoff_history') && tables.includes('paper_difficulty'));
   const cols = db.prepare('PRAGMA table_info(questions)').all().map((c) => c.name);
   assert.ok(cols.includes('exam') && cols.includes('tier') && cols.includes('shift'));
 });
@@ -152,7 +156,7 @@ test('sessions list filters by exam', () => {
   assert.ok(upsc.every((s) => s.exam === 'UPSC_CSE_PRELIMS'));
 });
 
-test('analytics: progressSeries exposes the four exam-mode series', () => {
+test('analytics: progressSeries exposes the six exam-mode-tier series', () => {
   // A submitted SSC SELECTIVE session so the series has a point.
   const ids = sscQuestionIds(2);
   const sel = createSession({
@@ -170,12 +174,18 @@ test('analytics: progressSeries exposes the four exam-mode series', () => {
 
   const { series } = progressSeries();
   const seriesIds = series.map((s) => s.id);
-  for (const id of ['UPSC_FULL', 'UPSC_SELECTIVE', 'SSC_FULL', 'SSC_SELECTIVE']) {
+  const expected = [
+    'UPSC_FULL', 'UPSC_SELECTIVE',
+    'SSC_T1_FULL', 'SSC_T1_SELECTIVE',
+    'SSC_T2_FULL', 'SSC_T2_SELECTIVE',
+  ];
+  for (const id of expected) {
     assert.ok(seriesIds.includes(id), `missing series ${id}`);
   }
-  const sscSel = series.find((s) => s.id === 'SSC_SELECTIVE');
+  const sscSel = series.find((s) => s.id === 'SSC_T1_SELECTIVE');
   assert.ok(sscSel.points.length >= 1, 'submitted SSC selective session should appear');
   assert.ok(sscSel.points.every((p) => p.scorePercent !== undefined));
+  assert.equal(sscSel.points.at(-1).tier, 'TIER_I');
 });
 
 test('analytics: coverage is exam-scoped', () => {

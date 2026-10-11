@@ -40,7 +40,7 @@ export function getDb() {
 }
 
 /* ================================================================ migrations */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 function tableInfo(d, table) {
   return d.prepare(`PRAGMA table_info(${table})`).all();
@@ -164,6 +164,7 @@ function selfHeal(d) {
   ensureColumn(d, 'questions', 'shift', 'TEXT');
   ensureColumn(d, 'test_sessions', 'exam', 'TEXT');
   ensureColumn(d, 'test_sessions', 'total_marks', 'REAL');
+  ensureColumn(d, 'test_sessions', 'cycle_id', 'TEXT');
   ensureColumn(d, 'paper_coverage', 'exam', 'TEXT');
   ensureColumn(d, 'paper_coverage', 'tier', 'TEXT');
   ensureColumn(d, 'paper_coverage', 'shift', 'TEXT');
@@ -196,6 +197,13 @@ function migrate(d) {
     d.exec(`UPDATE paper_coverage SET exam = CASE WHEN paper IN ('GS1','CSAT') THEN 'UPSC_CSE_PRELIMS' ELSE exam END WHERE exam IS NULL`);
     // Indexes dropped with the rebuilt table are recreated when getDb()
     // applies schema.sql immediately after this migration finishes.
+  }
+
+  if (version < 3) {
+    // v3: SSC CGL weekly cycles, historical cutoffs, paper difficulty.
+    // New tables are created by schema.sql after this block; only the
+    // test_sessions.cycle_id column needs an in-place ALTER here.
+    ensureColumn(d, 'test_sessions', 'cycle_id', 'TEXT');
   }
 
   d.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);

@@ -33,6 +33,11 @@ import {
 import analytics from '../services/analytics.js';
 import { masteryOverview } from '../services/mastery.js';
 import { countPool } from '../services/selection.js';
+import {
+  currentCycle, cycleView, windowStatus as sscWindowStatus,
+  assertTier2FullPaperAllowed, attachSessionToCycle, recordTier2Start, listCycles,
+} from '../services/sscCycle.js';
+import { getSscConfig } from '../services/sscConfig.js';
 
 const router = Router();
 
@@ -149,12 +154,61 @@ router.get('/exact-papers', (req, res) => {
 });
 
 router.post('/full-paper/start', (req, res) => {
-  // Server-side gate: the client cannot bypass the Sunday lock.
-  assertFullPaperAllowed();
   const { kind = 'exact', paper = 'GS1', year = null, shift = null } = req.body || {};
   const paperCfg = CONFIG.PAPERS[paper];
   if (!paperCfg) return res.status(400).json({ error: 'Unknown paper.' });
   const exam = examOfPaper(paper);
+  const isSsc = exam.id === 'SSC_CGL';
+  const isSscTier2 = isSsc && paperCfg.tier === 'TIER_II';
+
+  // Sunday window gate: UPSC uses the shared FULL_PAPER window; SSC cycles use
+  // the admin-configured weekly window (defaults are identical: Sun 00:01–23:59 IST).
+  if (isSsc) {
+    const win = sscWindowStatus();
+    if (!win.available) {
+      return res.status(403).json({
+        code: 'FULL_PAPER_LOCKED',
+        error: `Full Paper is locked now. SSC window: Sunday ${win.openTime}–${win.closeTime} ${win.timezone}.`,
+      });
+    }
+  } else {
+    assertFullPaperAllowed();
+  }
+
+  // SSC weekly cycle: Tier-I attaches the cycle's persisted cutoff; Tier-II
+  // enforces enablement + qualification gating entirely server-side.
+  let cycle = null;
+  let cutoffForStart = null;
+  if (isSscTier2) {
+    try {
+      const gate = assertTier2FullPaperAllowed();
+      cycle = gate.cycle;
+      if (gate.resumed && gate.sessionId) {
+        return res.json({ resumed: true, ...syncSession(gate.sessionId), cycle: cycleView(cycle) });
+      }
+    } catch (err) {
+      return res.status(err.status || 403).json({ code: err.code || 'TIER2_LOCKED', error: err.message });
+    }
+  } else if (isSsc) {
+    try {
+      cycle = currentCycle();
+    } catch (err) {
+      return res.status(err.status || 422).json({ code: err.code || 'CYCLE_ERROR', error: err.message });
+    }
+    if (cycle?.missingDifficulty) {
+      return res.status(422).json({
+        code: 'DIFFICULTY_REQUIRED',
+        error: 'This Sunday cycle needs a paper difficulty classification before the Tier-I cutoff can be generated. Set it in Admin → SSC Configuration.',
+      });
+    }
+    cutoffForStart = {
+      mode: cycle.cutoff_mode,
+      percent: cycle.cutoff_percent,
+      marksOutOf200: Math.round((Number(cycle.cutoff_percent) / 100) * 200 * 100) / 100,
+      difficulty: cycle.difficulty,
+      snapshot: cycle.cutoffSnapshot,
+    };
+  }
 
   // Resume: never reset an exam already in progress (same kind only).
   const existing = activeSessions().find(
@@ -165,7 +219,7 @@ router.post('/full-paper/start', (req, res) => {
       (kind === 'exact' ? Number(s.config?.year) === Number(year) : true),
   );
   if (existing) {
-    return res.json({ resumed: true, ...syncSession(existing.id) });
+    return res.json({ resumed: true, ...syncSession(existing.id), cycle: cycle ? cycleView(cycle) : null, cutoff: cutoffForStart });
   }
 
   let questionIds;
@@ -216,16 +270,24 @@ router.post('/full-paper/start', (req, res) => {
     title,
     questionIds,
     durationSeconds: paperCfg.durationMinutes * 60,
+    cycleId: cycle && !cycle.missingDifficulty ? cycle.id : null,
     config: {
       kind,
       year,
       distribution,
       strictTimer: true,
       answersHidden: true,
+      ...(cutoffForStart ? { cycleCutoff: cutoffForStart } : {}),
       ...(sectionPlan || {}),
     },
     seed,
   });
+
+  if (cycle && !cycle.missingDifficulty) {
+    if (isSscTier2) recordTier2Start(cycle.id, session.id, paper);
+    else attachSessionToCycle(session.id, cycle.id, 1);
+    cycle = currentCycle({ autoFinalize: false }) || cycle;
+  }
 
   res.json({
     resumed: false,
@@ -237,6 +299,8 @@ router.post('/full-paper/start', (req, res) => {
     durationSeconds: session.duration_seconds,
     syncIntervalMs: CONFIG.SESSION.SYNC_INTERVAL_MS,
     distribution,
+    cycle: cycle && !cycle.missingDifficulty ? cycleView(cycle) : null,
+    cutoff: cutoffForStart,
   });
 });
 
@@ -620,6 +684,8 @@ router.get('/analytics/progress', (req, res) =>
     analytics.progressSeries({
       exams: req.query.exams ? String(req.query.exams).split(',') : null,
       kinds: req.query.kinds ? String(req.query.kinds).split(',') : null,
+      tiers: req.query.tiers ? String(req.query.tiers).split(',') : null,
+      modes: req.query.modes ? String(req.query.modes).split(',') : null,
       from: req.query.from ? Number(req.query.from) : null,
       to: req.query.to ? Number(req.query.to) : null,
       limit: Number(req.query.limit) || 500,
@@ -634,5 +700,32 @@ router.get('/analytics/coverage', (req, res) => res.json(analytics.coverage(exam
 router.get('/analytics/mastery', (req, res) =>
   res.json(masteryOverview({ paper: req.query.paper || null, exam: req.query.exam || null })),
 );
+
+/* ------------------------------------------------------ SSC weekly cycles */
+router.get('/ssc/cycle/current', (req, res) => {
+  const cfg = getSscConfig();
+  const cycle = currentCycle();
+  if (cycle?.missingDifficulty) {
+    return res.json({
+      missingDifficulty: true,
+      dateKey: cycle.dateKey,
+      id: cycle.id,
+      window: cycle.window,
+      tier2Enabled: cfg.tier2Enabled,
+      cutoffMode: cfg.cutoffMode,
+    });
+  }
+  res.json({
+    missingDifficulty: false,
+    cycle: cycleView(cycle, cfg),
+    tier2Enabled: cfg.tier2Enabled,
+    tier1GatingEnabled: cfg.tier1QualificationGatingEnabled,
+    cutoffMode: cfg.cutoffMode,
+  });
+});
+
+router.get('/ssc/cycles', (req, res) => {
+  res.json({ cycles: listCycles({ limit: Number(req.query.limit) || 52 }).map((c) => cycleView(c)) });
+});
 
 export default router;

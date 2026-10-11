@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
   paper              TEXT NOT NULL,
   title              TEXT NOT NULL,
   status             TEXT NOT NULL DEFAULT 'IN_PROGRESS',
+  cycle_id           TEXT,                   -- SSC weekly cycle link (full-paper attempts only)
   config_json        TEXT NOT NULL DEFAULT '{}',
   question_ids_json  TEXT NOT NULL DEFAULT '[]',
   seed               TEXT,
@@ -135,6 +136,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
 CREATE INDEX IF NOT EXISTS ix_sessions_status ON test_sessions (status);
 CREATE INDEX IF NOT EXISTS ix_sessions_started ON test_sessions (started_at);
 CREATE INDEX IF NOT EXISTS ix_sessions_exam ON test_sessions (exam);
+CREATE INDEX IF NOT EXISTS ix_sessions_cycle ON test_sessions (cycle_id);
 
 CREATE TABLE IF NOT EXISTS session_answers (
   session_id          TEXT NOT NULL REFERENCES test_sessions (id) ON DELETE CASCADE,
@@ -187,3 +189,71 @@ CREATE TABLE IF NOT EXISTS audit_log (
   actor      TEXT,
   created_at INTEGER NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- SSC CGL WEEKLY CYCLES (one independent record per Sunday, Asia/Kolkata)
+-- cycle_date is the Sunday date key; the id is SSC-CGL-YYYY-MM-DD.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ssc_cycles (
+  id                      TEXT PRIMARY KEY,
+  cycle_date              TEXT NOT NULL UNIQUE,   -- 'YYYY-MM-DD' of the Sunday, IST
+  cutoff_mode             TEXT NOT NULL,          -- MANUAL | RANDOM_WEEKLY | DIFFICULTY_AWARE
+  cutoff_percent          REAL NOT NULL,          -- persisted once; never regenerated
+  cutoff_snapshot_json    TEXT NOT NULL DEFAULT '{}',
+  difficulty              TEXT,                   -- EASY | MEDIUM | HARD (null when not difficulty-aware)
+  difficulty_source       TEXT,                   -- MANUAL | METADATA
+  historical_baseline_percent REAL,
+  adjustment_pp           REAL,
+  tier1_paper_id          TEXT NOT NULL DEFAULT 'SSC_T1',
+  tier1_session_id        TEXT,
+  tier1_status            TEXT NOT NULL DEFAULT 'NOT_ATTEMPTED', -- NOT_ATTEMPTED|IN_PROGRESS|COMPLETED|ABSENT
+  tier1_marks             REAL,
+  tier1_total_marks       REAL,
+  tier1_percent           REAL,
+  qualification_status    TEXT NOT NULL DEFAULT 'PENDING',        -- PENDING|QUALIFIED|NOT_QUALIFIED
+  tier2_paper_id          TEXT,
+  tier2_session_id        TEXT,
+  tier2_status            TEXT NOT NULL DEFAULT 'NOT_ELIGIBLE',  -- NOT_ELIGIBLE|IN_PROGRESS|COMPLETED|ABSENT
+  tier2_marks             REAL,                    -- null for ABSENT (never zero)
+  tier2_total_marks       REAL,
+  tier2_percent           REAL,
+  finalized_at            INTEGER,
+  created_at              INTEGER NOT NULL,
+  updated_at              INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_ssc_cycles_date ON ssc_cycles (cycle_date);
+
+-- ---------------------------------------------------------------------------
+-- HISTORICAL SSC CUTOFFS (official reference data — never a simulated cutoff)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ssc_cutoff_history (
+  id                  TEXT PRIMARY KEY,
+  year                INTEGER NOT NULL,
+  category            TEXT NOT NULL,             -- UR | OBC | EWS | SC | ST | ...
+  list                TEXT NOT NULL DEFAULT 'GENERAL', -- GENERAL | JSO | STATISTICAL_INVESTIGATOR
+  raw_marks           REAL NOT NULL,
+  max_marks           REAL NOT NULL DEFAULT 200,
+  normalized_percent  REAL NOT NULL,
+  source_url          TEXT,
+  verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED', -- VERIFIED | UNVERIFIED | MISSING
+  notes               TEXT,
+  created_at          INTEGER NOT NULL,
+  UNIQUE (year, category, list)
+);
+
+-- ---------------------------------------------------------------------------
+-- PAPER DIFFICULTY (optional metadata; never invented when data is thin)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS paper_difficulty (
+  id              TEXT PRIMARY KEY,
+  paper_id        TEXT NOT NULL,
+  cycle_date      TEXT,                          -- null = general classification
+  difficulty      TEXT NOT NULL,                 -- EASY | MEDIUM | HARD
+  difficulty_source TEXT NOT NULL,               -- MANUAL | METADATA
+  question_count  INTEGER,
+  computed_json   TEXT,
+  created_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_paper_difficulty_paper ON paper_difficulty (paper_id, cycle_date);

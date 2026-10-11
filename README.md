@@ -95,6 +95,30 @@ deadline is untouched.
 - **Resume:** if you already have an in-progress paper of the same kind, the
   server resumes it instead of creating a new one.
 
+### SSC CGL weekly cycles & cutoffs
+
+- Each Sunday is an **independent cycle** with id `SSC-CGL-YYYY-MM-DD` (the
+  Sunday's date in Asia/Kolkata). Qualification never carries over.
+- **Cutoff modes** (Admin → SSC Configuration):
+  - `MANUAL` — one configured percentage for every cycle.
+  - `RANDOM_WEEKLY` — one secure draw inside a configured min/max range.
+  - `DIFFICULTY_AWARE` — historical baseline adjusted by paper difficulty
+    (EASY +3pp, MEDIUM 0, HARD −3pp, clamped 55–85%). The baseline is
+    `resolveBaseline` (AVERAGE_RECENT of official-looking historical figures).
+- The cutoff is **generated once per cycle and persisted**; it is never
+  regenerated on refresh, retry or reopen. Concurrent starts are race-safe via
+  `UNIQUE(cycle_date)`.
+- **Tier-I qualification gate:** Tier-II full paper starts only if this
+  cycle's Tier-I result meets the cutoff (`CYCLE_CUTOFF` qualification type).
+  Selective Tier-II practice is always available, 24/7.
+- **Finalization:** at cycle close (or lazily on next access, or manually in
+  Admin), sessions are settled as `ABSENT` (null score), `NOT_ELIGIBLE`,
+  `NOT_QUALIFIED` etc. A finalized cycle is immutable — cutoff and scores are
+  never rewritten.
+- **Historical cutoffs** (2022: 114.27, 2023: 150.05, 2024: 153.19, 2025:
+  ~136.83 / 200 UR) are stored as `UNVERIFIED` reference only and are never
+  mixed with the simulated cutoff.
+
 ### Selective Practice (`#/selective`) — always open
 
 1. **Scope:** paper(s), subject(s), topics, question type, difficulty, years.

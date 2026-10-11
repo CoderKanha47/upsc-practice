@@ -5,6 +5,8 @@ import CONFIG from '../config/exam.config.js';
 import { getDb } from './db/database.js';
 import apiRouter from './routes/api.js';
 import adminRouter from './routes/admin.js';
+import { seedHistoricalCutoffs } from './services/cutoff.js';
+import { finalizeExpiredCycles } from './services/sscCycle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -44,6 +46,14 @@ export function createApp() {
 
 export function startServer() {
   const app = createApp();
+
+  // Reference cutoffs are seeded before the first request so the admin
+  // dashboard never shows a half-empty table.
+  seedHistoricalCutoffs();
+  // Cycles whose Sunday window closed while the app was down are settled here
+  // rather than waiting for someone to open that cycle's page.
+  finalizeExpiredCycles();
+
   return new Promise((resolve) => {
     const server = app.listen(CONFIG.APP.PORT, CONFIG.APP.HOST, () => {
       console.log(`${CONFIG.APP.NAME}`);

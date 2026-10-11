@@ -1,6 +1,8 @@
 import CONFIG, { getPaper, examOfPaper } from '../../config/exam.config.js';
 import { getDb, tx, now, newId, toJson, parseJson } from '../db/database.js';
 import { scoreSubmission, resultQualification } from './scoring.js';
+import { getCycle, cycleWindow, recordTier1Result, recordTier2Result } from './sscCycle.js';
+import { getSscConfig } from './sscConfig.js';
 
 /**
  * EXAM SESSION SERVICE
@@ -39,6 +41,7 @@ export function createSession({
   durationSeconds,
   config = {},
   seed = null,
+  cycleId = null,
   startedAt = now(),
 }) {
   const db = getDb();
@@ -54,9 +57,9 @@ export function createSession({
   }
   db.prepare(
     `INSERT INTO test_sessions
-      (id, mode, kind_label, paper, exam, title, status, config_json, question_ids_json,
+      (id, mode, kind_label, paper, exam, title, status, cycle_id, config_json, question_ids_json,
        seed, started_at, duration_seconds, deadline_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     mode,
@@ -64,6 +67,7 @@ export function createSession({
     paper,
     examId,
     title,
+    cycleId,
     toJson(config),
     toJson(questionIds),
     seed,
@@ -400,6 +404,28 @@ export function submitSession(sessionId, { auto = false } = {}) {
   if (session.status !== 'IN_PROGRESS') return getSession(sessionId);
 
   const at = now();
+
+  // Cycle-linked full papers (SSC Sunday cycles): a submission after the
+  // window close can NEVER become a valid completed result (Case F). The
+  // attempt is finalized as ABSENT instead; partial answers stay preserved
+  // in session_answers for diagnostics.
+  if (session.cycle_id) {
+    const cycle = getCycle(session.cycle_id);
+    if (cycle) {
+      const win = cycleWindow(cycle.cycle_date, getSscConfig());
+      if (at > win.closeAt) {
+        // ABSENT attempts never carry a score, not even a zero one.
+        getDb()
+          .prepare(
+            `UPDATE test_sessions SET status = 'ABSENT', marks_obtained = NULL, negative_marks = NULL,
+               total_marks = NULL, accuracy = NULL WHERE id = ? AND status = 'IN_PROGRESS'`,
+          )
+          .run(sessionId);
+        return getSession(sessionId);
+      }
+    }
+  }
+
   const questions = db
     .prepare(
       `SELECT id, question_number, correct_answer, marks, negative_marks FROM questions
@@ -458,6 +484,18 @@ export function submitSession(sessionId, { auto = false } = {}) {
   const finished = getSession(sessionId);
   finished.timeRemainingSeconds = remaining;
   finished.autoSubmitted = auto;
+
+  // SSC Sunday cycles: record the completed attempt and decide qualification
+  // server-side from the cycle's persisted cutoff (never from the client).
+  if (session.cycle_id) {
+    try {
+      const paperCfg = getPaper(session.paper);
+      if (paperCfg.tier === 'TIER_I') recordTier1Result(session.cycle_id, finished);
+      else if (paperCfg.tier === 'TIER_II') recordTier2Result(session.cycle_id, finished);
+    } catch {
+      /* cycle bookkeeping must never fail a scored submission */
+    }
+  }
   return finished;
 }
 
@@ -534,6 +572,22 @@ export function buildResult(sessionId) {
     err.code = 'NOT_SUBMITTED';
     throw err;
   }
+  if (session.status === 'ABSENT') {
+    // Finalized absence: never fabricate a score from partial data.
+    const cycle = session.cycle_id ? getCycle(session.cycle_id) : null;
+    return {
+      session: publicSession(session),
+      paper: (() => { const p = getPaper(session.paper); return { id: p.id, title: p.title, questionCount: p.questionCount, durationMinutes: p.durationMinutes, marks: p.marks }; })(),
+      status: 'ABSENT',
+      absent: true,
+      score: { marksObtained: null, totalMarks: session.total_marks ?? null, note: 'Attempt finalized as ABSENT at the Sunday window close — no score is recorded.' },
+      qualification: { type: 'ABSENT', status: 'ABSENT', note: 'This attempt was finalized as ABSENT. Partial answers (if any) are kept for diagnostics only.' },
+      cycle: cycle ? { id: cycle.id, dateKey: cycle.cycle_date, cutoffPercent: cycle.cutoff_percent } : null,
+      review: [],
+      distribution: { subject: {}, questionType: {}, difficulty: {} },
+      time: { count: 0 },
+    };
+  }
 
   const questions = db
     .prepare(
@@ -599,8 +653,44 @@ export function buildResult(sessionId) {
   const timeUsed = session.time_used_seconds || 0;
   const timeRemaining = Math.max(0, session.duration_seconds - timeUsed);
 
+  // Cycle-linked sessions surface the cycle's persisted cutoff (SSC Sunday
+  // cycle), never a generic shortlisting label — the cutoff snapshot stored
+  // on the cycle is the authoritative, immutable reference for this attempt.
+  const cycleRow = session.cycle_id ? getCycle(session.cycle_id) : null;
+  let qualification = resultQualification(scored.marksObtained, session.paper, CONFIG);
+  if (cycleRow && paper.tier === 'TIER_I') {
+    const total = session.total_marks ?? paper.marks;
+    const percent = total > 0 ? Math.round((scored.marksObtained / total) * 10000) / 100 : 0;
+    const cutoffPercent = Number(cycleRow.cutoff_percent);
+    qualification = {
+      type: 'CYCLE_CUTOFF',
+      obtained: scored.marksObtained,
+      totalMarks: total,
+      percent,
+      cutoffPercent,
+      cutoffMarks: Math.round((cutoffPercent / 100) * 200 * 100) / 100,
+      cutoffMode: cycleRow.cutoff_mode,
+      cutoffSnapshot: cycleRow.cutoffSnapshot,
+      qualified: percent >= cutoffPercent,
+      status: percent >= cutoffPercent ? 'QUALIFIED' : 'NOT QUALIFIED',
+      note: percent >= cutoffPercent
+        ? `Qualified this cycle\u2019s simulated Tier-I cutoff (${cutoffPercent}%). Tier-II full paper is unlocked for this Sunday only.`
+        : `Below this cycle\u2019s simulated Tier-I cutoff (${cutoffPercent}%). Tier-II stays locked this Sunday.`,
+      disclaimer: 'Simulated practice cutoff — not an official SSC cutoff.',
+    };
+  } else if (cycleRow && paper.tier === 'TIER_II') {
+    qualification = {
+      type: 'RAW_SCORE',
+      obtained: scored.marksObtained,
+      status: 'RAW SCORE',
+      cycleId: cycleRow.id,
+      disclaimer: 'Tier-II full-paper merit mock. Raw score recorded against this Sunday cycle.',
+    };
+  }
+
   const result = {
     session: publicSession(session),
+    cycle: cycleRow ? { id: cycleRow.id, dateKey: cycleRow.cycle_date, cutoffPercent: cycleRow.cutoff_percent, qualificationStatus: cycleRow.qualification_status, tier2Status: cycleRow.tier2_status } : null,
     paper: {
       id: paper.id,
       title: paper.title,
@@ -624,7 +714,7 @@ export function buildResult(sessionId) {
       timeRemainingSeconds: timeRemaining,
       autoSubmitted: session.status === 'AUTO_SUBMITTED',
     },
-    qualification: resultQualification(scored.marksObtained, session.paper, CONFIG),
+    qualification,
     review,
     distribution: reviewBreakdown(review),
     sections: sectionBreakdown(session, scored),

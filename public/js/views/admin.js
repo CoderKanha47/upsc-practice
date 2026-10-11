@@ -1,4 +1,4 @@
-import { get, post, patch, del, setAdminToken, getAdminToken } from '../api.js';
+import { get, post, put, patch, del, setAdminToken, getAdminToken } from '../api.js';
 import { h, mount, loadingBox, fmtDate, toast, confirmDialog, badgeForState, badgeForSourceType } from '../dom.js';
 import { currentExam, examConfig } from '../exam-state.js';
 
@@ -65,9 +65,10 @@ async function renderShell(view) {
     overview: () => renderOverview(stats, body),
     import: () => renderImport(body),
     review: () => renderReview(body),
+    ssc: () => renderSsc(body),
     audit: () => renderAudit(body),
   };
-  const label = { overview: 'Overview', import: 'Import', review: 'Review queue', audit: 'Audit log' };
+  const label = { overview: 'Overview', import: 'Import', review: 'Review queue', ssc: 'SSC cycles', audit: 'Audit log' };
   Object.entries(panels).forEach(([id, fn]) => {
     const btn = h('button', {
       class: `pill ${current === id ? 'active' : ''}`,
@@ -476,6 +477,337 @@ async function renderAudit(body) {
   } catch (err) {
     mount(body, h('div', { class: 'notice warn', text: err.message }));
   }
+}
+
+/* ---------------------------------------------------------------- SSC cycles */
+
+const CUTOFF_MODES = [
+  ['MANUAL', 'Manual — one configured percentage for every cycle'],
+  ['RANDOM_WEEKLY', 'Random weekly — one secure draw inside a configured range'],
+  ['DIFFICULTY_AWARE', 'Difficulty-aware — historical baseline adjusted by paper difficulty'],
+];
+
+async function renderSsc(body) {
+  mount(body, loadingBox());
+  const wrap = h('div', {});
+  mount(body, wrap);
+
+  async function reload() {
+    mount(wrap, loadingBox());
+    let cfgRes, dash, history;
+    try {
+      [cfgRes, dash, history] = await Promise.all([
+        get('/api/admin/ssc/config'),
+        get('/api/admin/ssc/dashboard'),
+        get('/api/admin/ssc/cutoffs'),
+      ]);
+    } catch (err) {
+      mount(wrap, h('div', { class: 'notice warn', text: err.message }));
+      return;
+    }
+    mount(
+      wrap,
+      configCard(cfgRes, reload),
+      dashboardCard(dash),
+      difficultyCard(dash, reload),
+      historyCard(history),
+      cyclesCard(await get('/api/admin/ssc/cycles?limit=26')),
+    );
+  }
+  await reload();
+}
+
+function pct(v) {
+  return v == null ? '—' : `${Number(v).toFixed(2)}%`;
+}
+
+function configCard({ config: cfg, defaults }, reload) {
+  const modeSel = h('select', {},
+    ...CUTOFF_MODES.map(([v, labelText]) =>
+      h('option', { value: v, selected: cfg.cutoffMode === v ? true : null }, labelText)),
+  );
+  const manual = h('input', { type: 'number', step: '0.01', min: '0', max: '100' });
+  manual.value = cfg.cutoff.manualPercent;
+  const rMin = h('input', { type: 'number', step: '0.01', min: '0', max: '100' });
+  rMin.value = cfg.cutoff.randomMinPercent;
+  const rMax = h('input', { type: 'number', step: '0.01', min: '0', max: '100' });
+  rMax.value = cfg.cutoff.randomMaxPercent;
+  const base = h('input', { type: 'number', step: '0.01', min: '0', max: '100' });
+  base.value = cfg.cutoff.historicalBaselinePercent;
+  const adjE = h('input', { type: 'number', step: '0.01' });
+  adjE.value = cfg.cutoff.difficultyAdjustments.EASY;
+  const adjM = h('input', { type: 'number', step: '0.01' });
+  adjM.value = cfg.cutoff.difficultyAdjustments.MEDIUM;
+  const adjH = h('input', { type: 'number', step: '0.01' });
+  adjH.value = cfg.cutoff.difficultyAdjustments.HARD;
+  const cMin = h('input', { type: 'number', step: '0.01', min: '0', max: '100' });
+  cMin.value = cfg.cutoff.clampMinPercent;
+  const cMax = h('input', { type: 'number', step: '0.01', min: '0', max: '100' });
+  cMax.value = cfg.cutoff.clampMaxPercent;
+
+  const tier2Toggle = checkbox(cfg.tier2Enabled);
+  const gatingToggle = checkbox(cfg.tier1QualificationGatingEnabled);
+  const metaToggle = checkbox(cfg.difficultyAssignment === 'METADATA_WHEN_RELIABLE');
+  const diffSel = h('select', {},
+    h('option', { value: 'EASY' }, 'Easy'),
+    h('option', { value: 'MEDIUM', selected: true }, 'Medium'),
+    h('option', { value: 'HARD' }, 'Hard'),
+  );
+  const previewSlot = h('div', {});
+  const modeField = h('div', {},
+    h('label', { class: 'field', style: { marginTop: '.6rem' } }, h('span', { text: 'Cutoff mode' }), modeSel),
+  );
+  modeSel.addEventListener('change', () => {
+    const wrap = modeSel.closest('.card');
+    const existing = wrap?.querySelector('.preview-difficulty');
+    if (modeSel.value !== 'DIFFICULTY_AWARE') {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    modeField.appendChild(
+      h('label', { class: 'field preview-difficulty', style: { marginTop: '.4rem' } },
+        h('span', { text: 'Difficulty used for previews' }), diffSel),
+    );
+  });
+  if (cfg.cutoffMode === 'DIFFICULTY_AWARE') {
+    modeField.appendChild(
+      h('label', { class: 'field preview-difficulty', style: { marginTop: '.4rem' } },
+        h('span', { text: 'Difficulty used for previews' }), diffSel),
+    );
+  }
+
+  const num = (el) => (el.value === '' ? null : Number(el.value));
+
+  async function preview() {
+    mount(previewSlot, loadingBox('Previewing…'));
+    try {
+      const res = await post('/api/admin/ssc/cutoff/preview', {
+        difficulty: modeSel.value === 'DIFFICULTY_AWARE' ? diffSel.value : null,
+      });
+      const c = res.cutoff;
+      mount(
+        previewSlot,
+        h('div', { class: 'notice good' },
+          h('div', { text: `Preview: ${pct(c.percent)} — ${Math.round((c.percent / 100) * 20000) / 100} marks out of 200` }),
+          h('div', { class: 'muted', style: { fontSize: '.8rem' }, text: `Baseline ${pct(res.baseline?.percent)} (${res.baseline?.source || '—'}) · clamp ${cfg.cutoff.clampMinPercent}–${cfg.cutoff.clampMaxPercent}%${res.wouldClamp ? ' · clamped' : ''}` }),
+        ),
+      );
+    } catch (err) {
+      mount(previewSlot, h('div', { class: 'notice warn', text: err.message }));
+    }
+  }
+
+  async function save() {
+    try {
+      await put('/api/admin/ssc/config', {
+        tier2Enabled: tier2Toggle.checked,
+        tier1QualificationGatingEnabled: gatingToggle.checked,
+        cutoffMode: modeSel.value,
+        difficultyAssignment: metaToggle.checked ? 'METADATA_WHEN_RELIABLE' : 'MANUAL_REQUIRED',
+        cutoff: {
+          manualPercent: num(manual),
+          randomMinPercent: num(rMin),
+          randomMaxPercent: num(rMax),
+          historicalBaselinePercent: num(base),
+          difficultyAdjustments: { EASY: num(adjE), MEDIUM: num(adjM), HARD: num(adjH) },
+          clampMinPercent: num(cMin),
+          clampMaxPercent: num(cMax),
+        },
+      });
+      toast('SSC configuration saved.', 'success');
+      reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  return h('section', { class: 'card section-gap' },
+    h('div', { class: 'card-title' },
+      h('h2', { text: 'SSC cycle configuration' }),
+      h('span', { class: 'muted', text: 'Cutoffs are generated once per Sunday cycle and never regenerated.' }),
+    ),
+    h('div', { class: 'notice', text: 'Tier-II full paper is gated on qualifying this cycle\u2019s Tier-I cutoff unless you turn gating off. Selective practice is always available, 24/7.' }),
+    h('div', { class: 'grid grid-2' },
+      h('label', { class: 'check' }, tier2Toggle, h('span', { text: 'Enable Tier-II full paper (Sunday window)' })),
+      h('label', { class: 'check' }, gatingToggle, h('span', { text: 'Require Tier-I qualification for Tier-II' })),
+    ),
+    h('label', { class: 'field', style: { marginTop: '.6rem' } }, h('span', { text: 'Cutoff mode' }), modeSel),
+    modeField,
+    h('div', { class: 'grid grid-3', style: { marginTop: '.4rem' } },
+      h('label', { class: 'field' }, h('span', { text: 'Manual cutoff %' }), manual),
+      h('label', { class: 'field' }, h('span', { text: 'Random min %' }), rMin),
+      h('label', { class: 'field' }, h('span', { text: 'Random max %' }), rMax),
+    ),
+    h('div', { class: 'grid grid-4', style: { marginTop: '.4rem' } },
+      h('label', { class: 'field' }, h('span', { text: 'Baseline %' }), base),
+      h('label', { class: 'field' }, h('span', { text: 'Easy adj (pp)' }), adjE),
+      h('label', { class: 'field' }, h('span', { text: 'Medium adj (pp)' }), adjM),
+      h('label', { class: 'field' }, h('span', { text: 'Hard adj (pp)' }), adjH),
+    ),
+    h('div', { class: 'grid grid-2', style: { marginTop: '.4rem' } },
+      h('label', { class: 'field' }, h('span', { text: 'Clamp min %' }), cMin),
+      h('label', { class: 'field' }, h('span', { text: 'Clamp max %' }), cMax),
+    ),
+    h('label', { class: 'check', style: { marginTop: '.5rem' } }, metaToggle, h('span', { text: 'Derive difficulty from imported metadata when reliable (else require a manual classification)' })),
+    h('div', { class: 'btn-row', style: { marginTop: '.8rem' } },
+      h('button', { class: 'btn btn-primary', onClick: save }, 'Save configuration'),
+      h('button', { class: 'btn', onClick: preview }, 'Preview cutoff'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' }, text: `Defaults: ${defaults.cutoffMode}, clamp ${defaults.cutoff.clampMinPercent}–${defaults.cutoff.clampMaxPercent}%, baseline ${defaults.cutoff.historicalBaselinePercent}%` }),
+    ),
+    previewSlot,
+  );
+}
+
+function checkbox(checked) {
+  return h('input', { type: 'checkbox', ...(checked ? { checked: true } : {}) });
+}
+
+function dashboardCard(dash) {
+  const s = dash.stats || {};
+  const cur = dash.current;
+  const currentBox = cur?.error
+    ? h('div', { class: 'notice warn', text: `Current cycle: ${cur.error}` })
+    : cur?.missingDifficulty
+      ? h('div', { class: 'notice warn', text: `No cutoff generated for ${cur.dateKey} yet — classify the paper below, then save.` })
+      : h('div', { class: 'notice good' },
+          h('div', { text: `Current cycle ${cur.id} · cutoff ${pct(cur.cutoff?.percent)} (${Math.round((cur.cutoff?.percent || 0) * 2) / 100} / 200 marks) · ${cur.cutoff?.mode}` }),
+          h('div', { class: 'muted', style: { fontSize: '.8rem' }, text: `Tier-I ${cur.tier1?.status} · ${cur.qualificationStatus} · Tier-II ${cur.tier2?.status}${cur.tier2?.eligible ? ' (eligible now)' : ''}` }),
+        );
+
+  const tile = (labelText, value, sub) =>
+    h('div', { class: 'tile' },
+      h('div', { class: 'tile-label', text: labelText }),
+      h('div', { class: 'tile-value', text: String(value ?? '—') }),
+      h('div', { class: 'tile-sub', text: sub }),
+    );
+
+  return h('section', { class: 'card section-gap' },
+    h('div', { class: 'card-title' }, h('h2', { text: 'Cycle dashboard' })),
+    currentBox,
+    h('div', { class: 'grid grid-4', style: { marginTop: '.6rem' } },
+      tile('Total cycles', s.totalCycles, 'Sundays with a cycle row'),
+      tile('Tier-I attempts', s.tier1Attempts, 'completed full papers'),
+      tile('Qualified', s.qualified, 'met the cutoff'),
+      tile('Not qualified', s.notQualified, 'below the cutoff'),
+      tile('Tier-II completed', s.tier2Completed, 'full papers submitted'),
+      tile('Tier-II absent', s.tier2Absent, 'qualified but never finished'),
+      tile('Missing paper data', s.missingPaperCycles, 'cycles with no importable Tier-I paper'),
+      tile('Baseline', pct(dash.baseline?.percent), dash.baseline?.source || '—'),
+    ),
+    h('div', { class: 'notice', style: { marginTop: '.6rem' }, text: `Sunday window ${dash.window?.current?.openTime}–${dash.window?.current?.closeTime} ${dash.window?.current?.timezone || 'Asia/Kolkata'} · next cycle ${dash.window?.next?.dateKey}` }),
+  );
+}
+
+function difficultyCard(dash, reload) {
+  const slot = h('div', {});
+  const sel = h('select', {},
+    h('option', { value: 'EASY' }, 'Easy'),
+    h('option', { value: 'MEDIUM', selected: true }, 'Medium'),
+    h('option', { value: 'HARD' }, 'Hard'),
+  );
+  const dateInput = h('input', { type: 'date', placeholder: 'leave blank for a general classification' });
+  if (dash.current?.dateKey && !dash.current?.missingDifficulty) dateInput.value = dash.current.dateKey;
+
+  async function classify() {
+    try {
+      const res = await post('/api/admin/ssc/difficulty', {
+        paperId: 'SSC_T1',
+        cycleDate: dateInput.value || null,
+        difficulty: sel.value,
+      });
+      toast(`Stored ${sel.value} classification.`, 'success');
+      if (!res.cycleUpdated && dateInput.value) {
+        toast('No open cycle for that date yet — the cutoff will use it on the next start.', 'success');
+      }
+      reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  return h('section', { class: 'card section-gap' },
+    h('div', { class: 'card-title' }, h('h2', { text: 'Paper difficulty' })),
+    h('div', { class: 'notice', text: 'Difficulty-aware cutoffs need a classification. Nothing is inferred from your own answers, and a missing classification blocks the cycle instead of inventing a number.' }),
+    h('div', { class: 'grid grid-3' },
+      h('label', { class: 'field' }, h('span', { text: 'Difficulty' }), sel),
+      h('label', { class: 'field' }, h('span', { text: 'Cycle date (blank = general)' }), dateInput),
+      h('div', { style: { display: 'flex', alignItems: 'flex-end' } },
+        h('button', { class: 'btn btn-primary', onClick: classify }, 'Store classification'),
+      ),
+    ),
+    slot,
+  );
+}
+
+function historyCard({ cutoffs }) {
+  const rows = (cutoffs || []).map((c) =>
+    h('tr', {},
+      h('td', { class: 'num', text: String(c.year) }),
+      h('td', { text: c.category }),
+      h('td', { text: c.list }),
+      h('td', { class: 'num', text: `${c.raw_marks} / ${c.max_marks}` }),
+      h('td', { class: 'num', text: pct(c.normalized_percent) }),
+      h('td', {}, h('span', { class: `badge ${c.verification_status === 'VERIFIED' ? 'badge-good' : 'badge-warn'}`, text: c.verification_status })),
+      h('td', { class: 'muted', style: { fontSize: '.78rem' }, text: c.notes || '' }),
+    ),
+  );
+  return h('section', { class: 'card section-gap' },
+    h('div', { class: 'card-title' }, h('h2', { text: 'Historical cutoffs (reference only)' })),
+    h('div', { class: 'notice warn', text: 'These are official-looking historical figures kept for reference. They are never used as your simulated cutoff, and anything unverified is labelled as such.' }),
+    rows.length
+      ? h('div', { class: 'table-wrap' },
+          h('table', { class: 'table' },
+            h('thead', {}, h('tr', {},
+              h('th', { text: 'Year' }), h('th', { text: 'Category' }), h('th', { text: 'List' }),
+              h('th', { text: 'Marks' }), h('th', { text: 'Percent' }), h('th', { text: 'Status' }), h('th', { text: 'Notes' }),
+            )),
+            h('tbody', {}, ...rows),
+          ),
+        )
+      : h('div', { class: 'empty' }, h('strong', { text: 'No reference cutoffs stored' })),
+  );
+}
+
+function cyclesCard({ cycles }) {
+  const rows = (cycles || []).map((c) =>
+    h('tr', {},
+      h('td', { class: 'mono', style: { fontSize: '.78rem' }, text: c.id }),
+      h('td', { class: 'num', text: pct(c.cutoff?.percent) }),
+      h('td', { text: c.cutoff?.mode || '' }),
+      h('td', {}, h('span', { class: 'badge badge-neutral', text: c.tier1?.status })),
+      h('td', {}, h('span', { class: `badge ${c.qualificationStatus === 'QUALIFIED' ? 'badge-good' : c.qualificationStatus === 'NOT_QUALIFIED' ? 'badge-warn' : 'badge-neutral'}`, text: c.qualificationStatus })),
+      h('td', {}, h('span', { class: `badge ${c.tier2?.status === 'COMPLETED' ? 'badge-good' : c.tier2?.status === 'ABSENT' ? 'badge-warn' : 'badge-neutral'}`, text: c.tier2?.status })),
+      h('td', {}, c.finalized ? h('span', { class: 'badge badge-good', text: 'finalized' }) : h('span', { class: 'muted', text: 'open' })),
+      h('td', {}, h('div', { class: 'btn-row' },
+        c.finalized ? null : h('button', {
+          class: 'btn btn-sm',
+          onClick: async () => {
+            try {
+              await post(`/api/admin/ssc/cycles/${encodeURIComponent(c.id)}/finalize`, {});
+              toast('Cycle finalized.', 'success');
+            } catch (err) { toast(err.message, 'error'); }
+          },
+        }, 'Finalize'),
+      )),
+    ),
+  );
+  return h('section', { class: 'card section-gap' },
+    h('div', { class: 'card-title' }, h('h2', { text: 'Sunday cycles' })),
+    h('div', { class: 'notice', text: 'Finalizing closes an open cycle and marks unfinished attempts. A finalized cycle is immutable — its cutoff and scores are never rewritten.' }),
+    rows.length
+      ? h('div', { class: 'table-wrap' },
+          h('table', { class: 'table' },
+            h('thead', {}, h('tr', {},
+              h('th', { text: 'Cycle' }), h('th', { text: 'Cutoff' }), h('th', { text: 'Mode' }),
+              h('th', { text: 'Tier-I' }), h('th', { text: 'Qualification' }), h('th', { text: 'Tier-II' }),
+              h('th', { text: 'State' }), h('th', { text: '' }),
+            )),
+            h('tbody', {}, ...rows),
+          ),
+        )
+      : h('div', { class: 'empty' }, h('strong', { text: 'No cycles yet' }), h('div', { text: 'A cycle row is created the first time a Sunday full paper is opened.' })),
+  );
 }
 
 function escapeHtml(s) {

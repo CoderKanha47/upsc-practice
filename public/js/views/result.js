@@ -26,8 +26,9 @@ export default async function result(view, params) {
 
   const { session, paper, score, qualification, review, distribution, time, sections } = data;
   const filterState = { filter: 'ALL', query: '' };
+  const isAbsent = session.status === 'ABSENT' || qualification?.type === 'ABSENT';
 
-  const pct = score.totalMarks ? (score.marksObtained / score.totalMarks) * 100 : 0;
+  const pct = isAbsent || !score.totalMarks ? null : (score.marksObtained / score.totalMarks) * 100;
 
   /* ------------------------------------------- qualification (strategy-driven) */
   function qualificationBadge() {
@@ -44,6 +45,13 @@ export default async function result(view, params) {
           class: `qual-badge ${qualification.position?.startsWith('BELOW') ? 'fail' : 'pass'}`,
           text: `Indicative band: ${qualification.position}`,
         });
+      case 'CYCLE_CUTOFF':
+        return h('span', {
+          class: `qual-badge ${qualification.qualified ? 'pass' : 'fail'}`,
+          text: `Cycle cutoff: ${qualification.status}${qualification.qualified ? '' : ' (below cutoff)'}`,
+        });
+      case 'ABSENT':
+        return h('span', { class: 'qual-badge fail', text: 'ABSENT' });
       case 'RAW_SCORE':
       default:
         return h('span', { class: 'qual-badge pass', text: qualification?.status || 'RAW SCORE' });
@@ -58,9 +66,19 @@ export default async function result(view, params) {
         return h('div', { class: 'notice', text: `${qualification.note} Obtained: ${qualification.obtained} marks.` });
       case 'CUTOFF_ESTIMATE':
         return h('div', { class: 'notice warn', text: `${qualification.disclaimer} Your ${score.marksObtained} marks sit ${qualification.position.toLowerCase()} (${qualification.range[0]}–${qualification.range[1]}).` });
+      case 'CYCLE_CUTOFF': {
+        const cq = qualification.cycleId ? ` Cycle ${qualification.cycleId}.` : '';
+        return h('div', { class: `notice ${qualification.qualified ? 'good' : 'warn'}` },
+          h('div', { text: `${qualification.note || ''}${cq}` }),
+          h('div', { class: 'muted', style: { fontSize: '.84rem' }, text: `Obtained: ${qualification.obtained} / ${qualification.totalMarks} marks (${qualification.percent}%). Cutoff: ${qualification.cutoffPercent}% (${qualification.cutoffMarks} marks, ${qualification.cutoffMode}).${qualification.qualified ? ' You are eligible for the Tier-II full paper while this Sunday window is open.' : ' Tier-II full paper is locked for this cycle.'}` }),
+          h('div', { class: 'muted', style: { fontSize: '.78rem' }, text: qualification.disclaimer || '' }),
+        );
+      }
+      case 'ABSENT':
+        return h('div', { class: 'notice warn', text: `${qualification.note || 'This attempt is recorded as ABSENT — no score is awarded.'}${qualification.cycleId ? ` Cycle: ${qualification.cycleId}.` : ''}` });
       case 'RAW_SCORE':
       default:
-        return h('div', { class: 'notice', text: `${qualification?.disclaimer || 'Raw score — no cutoff is implied.'} Obtained: ${qualification?.obtained ?? score.marksObtained} marks.` });
+        return h('div', { class: 'notice', text: `${qualification?.disclaimer || 'Raw score — no cutoff is implied.'}${qualification?.obtained != null ? ` Obtained: ${qualification.obtained} marks.` : ''}` });
     }
   }
 
@@ -74,8 +92,8 @@ export default async function result(view, params) {
       h('div', { class: 'sub', text: `${fmtDate(session.started_at)}${session.status === 'AUTO_SUBMITTED' ? ' · auto-submitted at time over' : ''}` }),
     ),
     h('div', { class: 'result-score' },
-      h('div', { class: 'big', text: `${score.marksObtained} / ${score.totalMarks}` }),
-      h('div', { class: 'of', text: `${pct.toFixed(1)}% of total marks · ${score.accuracy}% accuracy` }),
+      h('div', { class: 'big', text: isAbsent ? '— / —' : `${score.marksObtained} / ${score.totalMarks}` }),
+      h('div', { class: 'of', text: isAbsent ? 'No score — session ABSENT' : `${pct.toFixed(1)}% of total marks · ${score.accuracy}% accuracy` }),
       qualificationBadge(),
     ),
   );
@@ -87,19 +105,23 @@ export default async function result(view, params) {
       sub ? h('div', { class: 'tile-sub', text: sub }) : null,
     );
 
-  const strip = h(
-    'div',
-    { class: 'progress-strip', title: 'Correct / incorrect / unattempted' },
-    h('span', { class: 's-correct', style: { width: `${(score.correct / Math.max(1, review.length)) * 100}%` } }),
-    h('span', { class: 's-incorrect', style: { width: `${(score.incorrect / Math.max(1, review.length)) * 100}%` } }),
-    h('span', { class: 's-unattempted', style: { width: `${(score.unattempted / Math.max(1, review.length)) * 100}%` } }),
-  );
+  const strip = isAbsent
+    ? null
+    : h(
+        'div',
+        { class: 'progress-strip', title: 'Correct / incorrect / unattempted' },
+        h('span', { class: 's-correct', style: { width: `${(score.correct / Math.max(1, review.length)) * 100}%` } }),
+        h('span', { class: 's-incorrect', style: { width: `${(score.incorrect / Math.max(1, review.length)) * 100}%` } }),
+        h('span', { class: 's-unattempted', style: { width: `${(score.unattempted / Math.max(1, review.length)) * 100}%` } }),
+      );
 
   const tiles = h('div', { class: 'grid grid-4', style: { marginTop: '1rem' } },
-    tile('Attempted', `${score.attempted} / ${review.length}`, `${score.unattempted} unattempted`),
-    tile('Correct', String(score.correct), `+${score.correctMarks} marks`, 'good'),
-    tile('Incorrect', String(score.incorrect), `−${score.negativeMarks} marks negative`, 'bad'),
-    tile('Time used', fmtDuration(score.timeUsedSeconds), score.autoSubmitted ? 'submitted at time over' : `${fmtDuration(score.timeRemainingSeconds)} left`),
+    isAbsent
+      ? tile('Status', 'ABSENT', 'no score awarded', 'bad')
+      : tile('Attempted', `${score.attempted} / ${review.length}`, `${score.unattempted} unattempted`),
+    isAbsent ? null : tile('Correct', String(score.correct), `+${score.correctMarks} marks`, 'good'),
+    isAbsent ? null : tile('Incorrect', String(score.incorrect), `−${score.negativeMarks} marks negative`, 'bad'),
+    isAbsent ? null : tile('Time used', fmtDuration(score.timeUsedSeconds), score.autoSubmitted ? 'submitted at time over' : `${fmtDuration(score.timeRemainingSeconds)} left`),
   );
 
   const sectionsCard = Array.isArray(sections) && sections.length

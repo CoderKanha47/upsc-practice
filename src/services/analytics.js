@@ -251,31 +251,43 @@ export function trend(limit = 30, { exam = null, mode = null } = {}) {
  */
 const FULL_MODES = new Set(['FULL_EXACT', 'FULL_MIXED']);
 const SELECTIVE_MODES = new Set(['SELECTIVE', 'PYQ_PRACTICE']);
+// Six independent series: UPSC (full/selective) + SSC Tier-I + SSC Tier-II.
 const SERIES_DEFS = [
-  { id: 'UPSC_FULL', exam: 'UPSC_CSE_PRELIMS', kind: 'FULL', label: 'UPSC Full Paper' },
-  { id: 'UPSC_SELECTIVE', exam: 'UPSC_CSE_PRELIMS', kind: 'SELECTIVE', label: 'UPSC Selective' },
-  { id: 'SSC_FULL', exam: 'SSC_CGL', kind: 'FULL', label: 'SSC Full Paper' },
-  { id: 'SSC_SELECTIVE', exam: 'SSC_CGL', kind: 'SELECTIVE', label: 'SSC Selective' },
+  { id: 'UPSC_FULL', exam: 'UPSC_CSE_PRELIMS', kind: 'FULL', tier: null, label: 'UPSC Full Paper' },
+  { id: 'UPSC_SELECTIVE', exam: 'UPSC_CSE_PRELIMS', kind: 'SELECTIVE', tier: null, label: 'UPSC Selective Practice' },
+  { id: 'SSC_T1_FULL', exam: 'SSC_CGL', kind: 'FULL', tier: 'TIER_I', label: 'SSC Tier-I Full Paper' },
+  { id: 'SSC_T1_SELECTIVE', exam: 'SSC_CGL', kind: 'SELECTIVE', tier: 'TIER_I', label: 'SSC Tier-I Selective Practice' },
+  { id: 'SSC_T2_FULL', exam: 'SSC_CGL', kind: 'FULL', tier: 'TIER_II', label: 'SSC Tier-II Full Paper' },
+  { id: 'SSC_T2_SELECTIVE', exam: 'SSC_CGL', kind: 'SELECTIVE', tier: 'TIER_II', label: 'SSC Tier-II Selective Practice' },
 ];
 
-export function progressSeries({ exams = null, kinds = null, from = null, to = null, limit = 500 } = {}) {
+function tierOfPaper(paperId) {
+  if (paperId === 'SSC_T1') return 'TIER_I';
+  if (String(paperId || '').startsWith('SSC_T2_')) return 'TIER_II';
+  return null; // UPSC papers
+}
+
+export function progressSeries({ exams = null, kinds = null, tiers = null, modes = null, from = null, to = null, limit = 500 } = {}) {
   const rows = getDb()
     .prepare(
-      `SELECT id, exam, mode, paper, title, started_at, marks_obtained, total_marks, accuracy
-       FROM test_sessions WHERE status != 'IN_PROGRESS'
+      `SELECT id, exam, mode, paper, title, status, started_at, submitted_at, marks_obtained, total_marks, accuracy
+       FROM test_sessions WHERE status IN ('SUBMITTED', 'AUTO_SUBMITTED')
        ORDER BY started_at DESC LIMIT ?`,
     )
     .all(Math.min(2000, Number(limit) || 500));
 
-  const bySeries = new Map(SERIES_DEFS.map((s) => [s.id, { ...s, points: [] }]));
+  const bySeries = new Map(SERIES_DEFS.map((s) => [s.id, { ...s, points: [], absentCount: 0 }]));
   for (const r of rows) {
     const examId = r.exam || DEFAULT_EXAM;
     const kind = FULL_MODES.has(r.mode) ? 'FULL' : SELECTIVE_MODES.has(r.mode) ? 'SELECTIVE' : null;
     if (!kind) continue;
-    const def = SERIES_DEFS.find((s) => s.exam === examId && s.kind === kind);
+    const tier = tierOfPaper(r.paper);
+    const def = SERIES_DEFS.find((s) => s.exam === examId && s.kind === kind && s.tier === tier);
     if (!def) continue;
     if (exams?.length && !exams.includes(examId)) continue;
     if (kinds?.length && !kinds.includes(kind)) continue;
+    if (tiers?.length && !tiers.includes(tier || 'NONE')) continue;
+    if (modes?.length && !modes.includes(r.mode)) continue;
     const ts = r.started_at;
     if (from && ts < from) continue;
     if (to && ts > to) continue;
@@ -286,16 +298,28 @@ export function progressSeries({ exams = null, kinds = null, from = null, to = n
       date: new Date(ts).toISOString(),
       timestamp: ts,
       paper: r.paper,
+      tier,
+      mode: r.mode,
       title: r.title,
+      status: r.status === 'AUTO_SUBMITTED' ? 'COMPLETED_AUTO' : 'COMPLETED',
       marksObtained: Number(r.marks_obtained || 0),
       totalMarks: total || null,
       scorePercent,
     });
   }
+  // ABSENT / NOT_ELIGIBLE / NOT_QUALIFIED never invent graph points — they are
+  // surfaced as counts and in the weekly cycle history instead.
+  const absentRows = getDb()
+    .prepare(
+      `SELECT status, COUNT(*) AS n FROM test_sessions WHERE status = 'ABSENT' GROUP BY status`,
+    )
+    .all();
+  const totalAbsent = absentRows.reduce((s, r) => s + Number(r.n), 0);
   for (const s of bySeries.values()) s.points.sort((a, b) => a.timestamp - b.timestamp);
   return {
     series: [...bySeries.values()],
-    note: 'Scores are normalized to percentage of the marks available in each test, so UPSC (200 marks) and SSC papers plot on one axis.',
+    absentCount: totalAbsent,
+    note: 'Scores are normalized to percentage of the marks available in each test, so UPSC (200 marks) and SSC papers plot on one axis. ABSENT attempts are excluded from the plot (they are not zero-percent scores).',
   };
 }
 

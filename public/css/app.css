@@ -599,6 +599,21 @@ details.panel { border: 1px solid var(--line); border-radius: 6px; background: v
 details.panel > summary { cursor: pointer; padding: 0.6rem 0.9rem; font-weight: 600; font-size: 0.9rem; color: var(--heading); }
 details.panel > .panel-body { padding: 0 0.9rem 0.9rem; }
 
+/* SSC cycle admin + result card */
+.ssc-config-grid { display: grid; gap: 0.6rem; }
+.ssc-config-grid .field { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.86rem; }
+.ssc-config-grid .check { display: flex; gap: 0.5rem; align-items: center; font-size: 0.9rem; }
+.result-cycle-card {
+  border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius);
+  background: var(--card); padding: 0.9rem 1rem; margin-top: 0.8rem;
+}
+.result-cycle-card h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+.result-cycle-card .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; font-size: 0.84rem; }
+.result-cycle-card .kv b { display: block; color: var(--muted); font-weight: 500; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.result-cycle-card.absent { border-left-color: var(--danger); }
+.result-cycle-card.qualified { border-left-color: var(--accent); }
+.qual-badge.absent { background: var(--danger); color: #fff; }
+
 @media (max-width: 760px) {
   .topbar-inner { flex-wrap: wrap; }
   .nav { display: none; width: 100%; flex-direction: column; }

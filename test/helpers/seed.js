@@ -108,4 +108,42 @@ export function seedSscFixtures({ t1Years = 3, perYear = 40 } = {}) {
   return insertMany(items, { source: 'TEST FIXTURE' });
 }
 
+/** SSC Tier-II Paper-I Session-I style fixtures (Quant/Reasoning/English/GA/Computer). */
+export function seedSscTier2Fixtures({ years = 1, perYear = 60 } = {}) {
+  const subjects = [
+    'Mathematical Abilities',
+    'Reasoning & General Intelligence',
+    'English Language & Comprehension',
+    'General Awareness',
+    'Computer Knowledge',
+  ];
+  const items = [];
+  for (let i = 0; i < years; i += 1) {
+    const year = 2026 - i;
+    for (let n = 1; n <= perYear; n += 1) {
+      const subject = subjects[n % subjects.length];
+      items.push({
+        year,
+        paper: 'SSC_T2_P1',
+        question_number: n,
+        question_text: `[FIXTURE SSC T2] ${year} Q${n} regarding ${subject} — pick the correct option?`,
+        options: [
+          { key: 'A', text: 'Option one' },
+          { key: 'B', text: 'Option two' },
+          { key: 'C', text: 'Option three' },
+          { key: 'D', text: 'Option four' },
+        ],
+        correct_answer: ['A', 'B', 'C', 'D'][n % 4],
+        subject,
+        topic: `SSC T2 ${subject} Topic ${n % 5}`,
+        difficulty: DIFFICULTIES[n % 3],
+        question_type: 'factual',
+        source_type: 'OFFICIAL_PYQ',
+        source: 'TEST FIXTURE — not a real SSC question',
+      });
+    }
+  }
+  return insertMany(items, { source: 'TEST FIXTURE' });
+}
+
 export { GS_SUBJECTS, CSAT_SUBJECTS, SSC_T1_SUBJECTS };
