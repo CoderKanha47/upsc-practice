@@ -55,28 +55,26 @@ Default admin token: `local-admin-token` (override with env `ADMIN_TOKEN`).
 
 ### Deploy to the web (phone + all devices)
 
-The app is a long-running Node server with a SQLite file, so it deploys to a
-host like Render or Railway — not Vercel, whose serverless filesystem is
-read-only. `render.yaml` is included.
+The app runs on Vercel as a serverless function backed by a Postgres database.
+`vercel.json` and `api/index.js` are included; locally it still uses SQLite, so
+nothing changes for day-to-day development or `npm test`.
 
-**Render (free tier):**
+**Vercel + Neon (free tier):**
 
-1. Push this repo to GitHub.
-2. In the Render dashboard → **New → Blueprint** → pick the repo. It reads
-   `render.yaml` and creates the service.
-3. After the first deploy, open the app URL. `ADMIN_TOKEN` is generated for you
-   — copy it from the service's **Environment** tab into the Admin login.
-4. The built-in practice questions are seeded at build time, so the app is
-   usable immediately.
+1. Create a free database at [neon.tech](https://neon.tech) and copy the
+   connection string (it starts with `postgres://`).
+2. Push this repo to GitHub, then import it at
+   [vercel.com/new](https://vercel.com/new).
+3. In the project's **Environment Variables**, add:
+   - `DATABASE_URL` — your Neon connection string
+   - `ADMIN_TOKEN` — any secret you choose (used for the Admin tab)
+4. Deploy. The schema is created automatically on the first request; run
+   `npm run seed:pg` once (with `DATABASE_URL` set) to load the built-in
+   practice questions.
+5. Open the deployment URL — it works on phones and any other device.
 
-> **Free tier has no persistent disk**, so the SQLite file lives on the
-> container's ephemeral filesystem: **your scores, cycles and imported
-> questions reset on every redeploy or restart.** Fine for trying it out. To
-> keep data, upgrade to a paid plan (which supports a mounted disk) or run it
-> on Railway/Fly with a volume and set `DB_FILE` to a path on that volume.
-
-The same repo works on Railway/Fly: set `HOST=0.0.0.0`, `DB_FILE` to a path on
-a mounted volume, and run `npm start`.
+Because the data lives in Neon, it survives redeploys, restarts and cold
+starts. The SQLite file used locally is untouched by any of this.
 
 ---
 

@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "import": "node scripts/run-import.js",
     "fetch-sources": "node scripts/fetch-sources.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "seed:pg": "node scripts/seed.js --postgres"
   },
   "keywords": [],
   "author": "",
