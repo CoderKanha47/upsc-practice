@@ -133,13 +133,13 @@ function sectionalConfigFor(paperId, questions) {
 }
 
 /* --------------------------------------------------------------- dashboard */
-router.get('/dashboard', (req, res) => {
+router.get('/dashboard', async (req, res) => {
   const examId = examFromRequest(req.query);
-  const overview = analytics.overview({ exam: examId });
+  const overview = await analytics.overview({ exam: examId });
   res.json({
     ...overview,
     fullPaper: fullPaperStatus(),
-    coverage: analytics.coverage(examId).totals,
+    coverage: (await analytics.coverage(examId)).totals,
     bufferSeconds: bufferSeconds(CONFIG, examId),
   });
 });
@@ -149,11 +149,11 @@ router.get('/full-paper/status', (req, res) => {
   res.json(fullPaperStatus());
 });
 
-router.get('/exact-papers', (req, res) => {
-  res.json(analytics.coverage(examFromRequest(req.query)));
+router.get('/exact-papers', async (req, res) => {
+  res.json(await analytics.coverage(examFromRequest(req.query)));
 });
 
-router.post('/full-paper/start', (req, res) => {
+router.post('/full-paper/start', async (req, res) => {
   const { kind = 'exact', paper = 'GS1', year = null, shift = null } = req.body || {};
   const paperCfg = CONFIG.PAPERS[paper];
   if (!paperCfg) return res.status(400).json({ error: 'Unknown paper.' });
@@ -181,17 +181,17 @@ router.post('/full-paper/start', (req, res) => {
   let cutoffForStart = null;
   if (isSscTier2) {
     try {
-      const gate = assertTier2FullPaperAllowed();
+      const gate = await assertTier2FullPaperAllowed();
       cycle = gate.cycle;
       if (gate.resumed && gate.sessionId) {
-        return res.json({ resumed: true, ...syncSession(gate.sessionId), cycle: cycleView(cycle) });
+        return res.json({ resumed: true, ...(await syncSession(gate.sessionId)), cycle: cycleView(cycle) });
       }
     } catch (err) {
       return res.status(err.status || 403).json({ code: err.code || 'TIER2_LOCKED', error: err.message });
     }
   } else if (isSsc) {
     try {
-      cycle = currentCycle();
+      cycle = await currentCycle();
     } catch (err) {
       return res.status(err.status || 422).json({ code: err.code || 'CYCLE_ERROR', error: err.message });
     }
@@ -211,7 +211,7 @@ router.post('/full-paper/start', (req, res) => {
   }
 
   // Resume: never reset an exam already in progress (same kind only).
-  const existing = activeSessions().find(
+  const existing = (await activeSessions()).find(
     (s) =>
       s.paper === paper &&
       (s.mode === 'FULL_EXACT' || s.mode === 'FULL_MIXED') &&
@@ -219,7 +219,7 @@ router.post('/full-paper/start', (req, res) => {
       (kind === 'exact' ? Number(s.config?.year) === Number(year) : true),
   );
   if (existing) {
-    return res.json({ resumed: true, ...syncSession(existing.id), cycle: cycle ? cycleView(cycle) : null, cutoff: cutoffForStart });
+    return res.json({ resumed: true, ...(await syncSession(existing.id)), cycle: cycle ? cycleView(cycle) : null, cutoff: cutoffForStart });
   }
 
   let questionIds;
@@ -233,7 +233,7 @@ router.post('/full-paper/start', (req, res) => {
 
   if (kind === 'exact') {
     if (!year) return res.status(400).json({ error: 'year is required for an exact paper.' });
-    const picked = pickExactPaper(year, paper, shift ? { shift } : {});
+    const picked = await pickExactPaper(year, paper, shift ? { shift } : {});
     if (!picked.complete) {
       return res.status(409).json({
         code: 'DATA_MISSING',
@@ -247,7 +247,7 @@ router.post('/full-paper/start', (req, res) => {
     mode = 'FULL_EXACT';
     kindLabel = exam.exactKindLabel;
   } else if (kind === 'mixed') {
-    const built = buildMixedPaper(paper, paperCfg.questionCount, {});
+    const built = await buildMixedPaper(paper, paperCfg.questionCount, {});
     questions = built.questions;
     questionIds = built.questions.map((q) => q.id);
     title = `Mixed ${paperCfg.shortTitle} · ${exam.years.START_YEAR}–${exam.years.END_YEAR}`;
@@ -262,7 +262,7 @@ router.post('/full-paper/start', (req, res) => {
     return res.status(400).json({ error: 'kind must be "exact" or "mixed".' });
   }
 
-  const session = createSession({
+  const session = await createSession({
     mode,
     kindLabel,
     paper,
@@ -284,9 +284,9 @@ router.post('/full-paper/start', (req, res) => {
   });
 
   if (cycle && !cycle.missingDifficulty) {
-    if (isSscTier2) recordTier2Start(cycle.id, session.id, paper);
-    else attachSessionToCycle(session.id, cycle.id, 1);
-    cycle = currentCycle({ autoFinalize: false }) || cycle;
+    if (isSscTier2) await recordTier2Start(cycle.id, session.id, paper);
+    else await attachSessionToCycle(session.id, cycle.id, 1);
+    cycle = (await currentCycle({ autoFinalize: false })) || cycle;
   }
 
   res.json({
@@ -305,11 +305,11 @@ router.post('/full-paper/start', (req, res) => {
 });
 
 /* --------------------------------------------------- selective practice */
-router.get('/selective/options', (req, res) => {
+router.get('/selective/options', async (req, res) => {
   const examId = examFromRequest(req.query);
   const exam = getExam(examId);
   const db = getDb();
-  const topics = db
+  const topics = await db
     .prepare(
       `SELECT subject, topic, COUNT(*) AS count FROM questions
        WHERE is_duplicate = 0 AND exam = ? AND correct_answer IS NOT NULL AND validation_state IN ('PARSED','REVIEW_REQUIRED','VERIFIED')
@@ -317,10 +317,10 @@ router.get('/selective/options', (req, res) => {
     )
     .all(examId);
   const counts = {};
-  for (const p of Object.values(exam.papers)) counts[p.id] = countPool({ paper: p.id });
-  counts.official = countPool({ exam: examId, sourceTypes: ['OFFICIAL_PYQ'] });
-  counts.aiGenerated = countPool({ exam: examId, sourceTypes: ['AI_GENERATED'] });
-  counts.custom = countPool({ exam: examId, sourceTypes: ['CUSTOM'] });
+  for (const p of Object.values(exam.papers)) counts[p.id] = await countPool({ paper: p.id });
+  counts.official = await countPool({ exam: examId, sourceTypes: ['OFFICIAL_PYQ'] });
+  counts.aiGenerated = await countPool({ exam: examId, sourceTypes: ['AI_GENERATED'] });
+  counts.custom = await countPool({ exam: examId, sourceTypes: ['CUSTOM'] });
   counts.total = Object.values(exam.papers).reduce((s, p) => s + counts[p.id], 0);
   res.json({
     exam: examId,
@@ -371,11 +371,11 @@ function selectiveFilters(body = {}) {
   return filters;
 }
 
-router.post('/selective/preview', (req, res) => {
+router.post('/selective/preview', async (req, res) => {
   const body = req.body || {};
   const filters = selectiveFilters(body);
   const count = body.count === 'all' || body.count === null ? null : Number(body.count);
-  const built = buildSelectiveSet(filters, count, { seed: body.seed });
+  const built = await buildSelectiveSet(filters, count, { seed: body.seed });
   const timing = previewTiming(built.questions, bufferSeconds(CONFIG, filters.exam));
   res.json({
     exam: filters.exam,
@@ -396,7 +396,7 @@ router.post('/selective/preview', (req, res) => {
   });
 });
 
-router.post('/selective/start', (req, res) => {
+router.post('/selective/start', async (req, res) => {
   const body = req.body || {};
   const filters = selectiveFilters(body);
   const exam = getExam(filters.exam);
@@ -404,7 +404,7 @@ router.post('/selective/start', (req, res) => {
     ? null
     : Number(body.count);
 
-  const built = buildSelectiveSet(filters, count, { seed: body.seed });
+  const built = await buildSelectiveSet(filters, count, { seed: body.seed });
   const timing = previewTiming(built.questions, bufferSeconds(CONFIG, exam.id));
 
   const subjects = [...new Set(built.questions.map((q) => q.subject).filter(Boolean))];
@@ -424,7 +424,7 @@ router.post('/selective/start', (req, res) => {
   titleParts.push(`${built.actual} questions`);
 
   const sessionPaper = papers.length === 1 ? papers[0] : exam.defaultPaper;
-  const session = createSession({
+  const session = await createSession({
     mode: 'SELECTIVE',
     kindLabel: 'SELECTIVE PRACTICE',
     paper: sessionPaper,
@@ -458,26 +458,26 @@ router.post('/selective/start', (req, res) => {
 });
 
 /** PYQ explorer practice: same questions, dynamic timing, always unlocked. */
-router.post('/pyq/practice', (req, res) => {
+router.post('/pyq/practice', async (req, res) => {
   const { year, paper, shift = null } = req.body || {};
   const paperCfg = CONFIG.PAPERS[paper];
   if (!paperCfg || !year) return res.status(400).json({ error: 'year and paper are required.' });
   const exam = examOfPaper(paper);
 
-  const picked = pickExactPaper(year, paper, shift ? { shift } : {});
+  const picked = await pickExactPaper(year, paper, shift ? { shift } : {});
   if (!picked.questionIds.length) {
     return res.status(409).json({
       code: 'DATA_MISSING',
       error: `DATA MISSING — ${year} ${paperCfg.shortTitle} has not been imported.`,
     });
   }
-  const built = buildSelectiveSet(
+  const built = await buildSelectiveSet(
     { paper, years: [Number(year)], includeIds: picked.questionIds },
     null,
     {},
   );
   const timing = previewTiming(built.questions, bufferSeconds(CONFIG, exam.id));
-  const session = createSession({
+  const session = await createSession({
     mode: 'PYQ_PRACTICE',
     kindLabel: 'PYQ PRACTICE',
     paper,
@@ -501,30 +501,30 @@ router.post('/pyq/practice', (req, res) => {
 });
 
 /* ---------------------------------------------------------------- sessions */
-router.get('/sessions/active', (req, res) => {
-  const active = activeSessions();
+router.get('/sessions/active', async (req, res) => {
+  const active = await activeSessions();
   res.json({ sessions: active.map(publicSession) });
 });
 
-router.get('/sessions', (req, res) => {
+router.get('/sessions', async (req, res) => {
   res.json({
-    sessions: listSessions({
+    sessions: (await listSessions({
       limit: Math.min(100, Number(req.query.limit) || 20),
       mode: req.query.mode || null,
       exam: req.query.exam || null,
-    }).map(publicSession),
+    })).map(publicSession),
   });
 });
 
-router.get('/sessions/:id', (req, res) => {
-  res.json(syncSession(req.params.id));
+router.get('/sessions/:id', async (req, res) => {
+  res.json(await syncSession(req.params.id));
 });
 
-router.post('/sessions/:id/answer', (req, res) => {
+router.post('/sessions/:id/answer', async (req, res) => {
   const { questionId, answer, timeSpentSeconds, marked, visited } = req.body || {};
   if (!questionId) return res.status(400).json({ error: 'questionId is required.' });
   res.json(
-    saveAnswer(req.params.id, {
+    await saveAnswer(req.params.id, {
       questionId,
       answer,
       timeSpentSeconds,
@@ -534,24 +534,24 @@ router.post('/sessions/:id/answer', (req, res) => {
   );
 });
 
-router.post('/sessions/:id/mark', (req, res) => {
+router.post('/sessions/:id/mark', async (req, res) => {
   const { questionId, marked } = req.body || {};
   if (!questionId) return res.status(400).json({ error: 'questionId is required.' });
-  res.json(setMarked(req.params.id, questionId, Boolean(marked)));
+  res.json(await setMarked(req.params.id, questionId, Boolean(marked)));
 });
 
-router.post('/sessions/:id/submit', (req, res) => {
-  const session = submitSession(req.params.id, { auto: false });
+router.post('/sessions/:id/submit', async (req, res) => {
+  const session = await submitSession(req.params.id, { auto: false });
   res.json({ submitted: true, session: publicSession(session) });
 });
 
-router.get('/sessions/:id/result', (req, res) => {
-  res.json(buildResult(req.params.id));
+router.get('/sessions/:id/result', async (req, res) => {
+  res.json(await buildResult(req.params.id));
 });
 
 /* --------------------------------------------------------------------- PYQ */
-router.get('/pyq/coverage', (req, res) => {
-  res.json(analytics.coverage(examFromRequest(req.query)));
+router.get('/pyq/coverage', async (req, res) => {
+  res.json(await analytics.coverage(examFromRequest(req.query)));
 });
 
 router.get('/pyq/questions', (req, res) => {
@@ -660,28 +660,28 @@ router.get('/questions/:id/similar', (req, res) => {
 });
 
 /* -------------------------------------------------------------- analytics */
-router.get('/analytics/overview', (req, res) => res.json(analytics.overview({ exam: req.query.exam || null })));
-router.get('/analytics/performance', (req, res) =>
+router.get('/analytics/overview', async (req, res) => res.json(await analytics.overview({ exam: req.query.exam || null })));
+router.get('/analytics/performance', async (req, res) =>
   res.json(
-    analytics.performanceBy(req.query.dimension || 'subject', {
+    await analytics.performanceBy(req.query.dimension || 'subject', {
       paper: req.query.paper || null,
       exam: req.query.exam || null,
       minAttempts: Number(req.query.minAttempts) || 1,
     }),
   ),
 );
-router.get('/analytics/time', (req, res) => res.json(analytics.timeAnalytics()));
-router.get('/analytics/trend', (req, res) =>
+router.get('/analytics/time', async (req, res) => res.json(await analytics.timeAnalytics()));
+router.get('/analytics/trend', async (req, res) =>
   res.json({
-    sessions: analytics.trend(Number(req.query.limit) || 30, {
+    sessions: await analytics.trend(Number(req.query.limit) || 30, {
       exam: req.query.exam || null,
       mode: req.query.mode || null,
     }),
   }),
 );
-router.get('/analytics/progress', (req, res) =>
+router.get('/analytics/progress', async (req, res) =>
   res.json(
-    analytics.progressSeries({
+    await analytics.progressSeries({
       exams: req.query.exams ? String(req.query.exams).split(',') : null,
       kinds: req.query.kinds ? String(req.query.kinds).split(',') : null,
       tiers: req.query.tiers ? String(req.query.tiers).split(',') : null,
@@ -692,19 +692,19 @@ router.get('/analytics/progress', (req, res) =>
     }),
   ),
 );
-router.get('/analytics/failures', (req, res) =>
-  res.json({ questions: analytics.repeatedFailures(Number(req.query.limit) || 25, { exam: req.query.exam || null }) }),
+router.get('/analytics/failures', async (req, res) =>
+  res.json({ questions: await analytics.repeatedFailures(Number(req.query.limit) || 25, { exam: req.query.exam || null }) }),
 );
-router.get('/analytics/calibration', (req, res) => res.json({ items: analytics.calibrationReport(Number(req.query.limit) || 40) }));
-router.get('/analytics/coverage', (req, res) => res.json(analytics.coverage(examFromRequest(req.query))));
-router.get('/analytics/mastery', (req, res) =>
-  res.json(masteryOverview({ paper: req.query.paper || null, exam: req.query.exam || null })),
+router.get('/analytics/calibration', async (req, res) => res.json({ items: await analytics.calibrationReport(Number(req.query.limit) || 40) }));
+router.get('/analytics/coverage', async (req, res) => res.json(await analytics.coverage(examFromRequest(req.query))));
+router.get('/analytics/mastery', async (req, res) =>
+  res.json(await masteryOverview({ paper: req.query.paper || null, exam: req.query.exam || null })),
 );
 
 /* ------------------------------------------------------ SSC weekly cycles */
-router.get('/ssc/cycle/current', (req, res) => {
+router.get('/ssc/cycle/current', async (req, res) => {
   const cfg = getSscConfig();
-  const cycle = currentCycle();
+  const cycle = await currentCycle();
   if (cycle?.missingDifficulty) {
     return res.json({
       missingDifficulty: true,
@@ -724,8 +724,8 @@ router.get('/ssc/cycle/current', (req, res) => {
   });
 });
 
-router.get('/ssc/cycles', (req, res) => {
-  res.json({ cycles: listCycles({ limit: Number(req.query.limit) || 52 }).map((c) => cycleView(c)) });
+router.get('/ssc/cycles', async (req, res) => {
+  res.json({ cycles: (await listCycles({ limit: Number(req.query.limit) || 52 })).map((c) => cycleView(c)) });
 });
 
 export default router;

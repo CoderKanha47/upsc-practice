@@ -46,7 +46,7 @@ export const HISTORICAL_SEED_ROWS = [
 ];
 
 /** Idempotent one-time seed of the reference table (safe to call repeatedly). */
-export function seedHistoricalCutoffs() {
+export async function seedHistoricalCutoffs() {
   const db = getDb();
   const insert = db.prepare(
     `INSERT OR IGNORE INTO ssc_cutoff_history
@@ -56,7 +56,7 @@ export function seedHistoricalCutoffs() {
   let inserted = 0;
   for (const r of HISTORICAL_SEED_ROWS) {
     const pct = round2((r.rawMarks / r.maxMarks) * 100);
-    const res = insert.run(
+    const res = await insert.run(
       newId('cut'), r.year, r.category, r.list, r.rawMarks, r.maxMarks, pct,
       r.sourceUrl, r.verificationStatus, r.notes, now(),
     );
@@ -65,7 +65,7 @@ export function seedHistoricalCutoffs() {
   return inserted;
 }
 
-export function listHistoricalCutoffs({ category = null, list = null } = {}) {
+export async function listHistoricalCutoffs({ category = null, list = null } = {}) {
   const db = getDb();
   const clauses = [];
   const params = [];
@@ -75,23 +75,23 @@ export function listHistoricalCutoffs({ category = null, list = null } = {}) {
   return db.prepare(`SELECT * FROM ssc_cutoff_history ${where} ORDER BY year DESC`).all(...params);
 }
 
-export function addHistoricalCutoff(row) {
+export async function addHistoricalCutoff(row) {
   const { year, category, list = 'GENERAL', rawMarks, maxMarks = 200, sourceUrl = null, verificationStatus = 'UNVERIFIED', notes = null } = row || {};
   if (!year || !category || rawMarks == null) throw new Error('year, category and rawMarks are required.');
   const pct = round2((Number(rawMarks) / Number(maxMarks)) * 100);
   const db = getDb();
-  const existing = db
+  const existing = await db
     .prepare('SELECT * FROM ssc_cutoff_history WHERE year = ? AND category = ? AND list = ?')
     .get(Number(year), category, list);
   if (existing) {
-    db.prepare(
+    await db.prepare(
       `UPDATE ssc_cutoff_history SET raw_marks = ?, max_marks = ?, normalized_percent = ?,
          source_url = ?, verification_status = ?, notes = ? WHERE id = ?`,
     ).run(Number(rawMarks), Number(maxMarks), pct, sourceUrl, verificationStatus, notes, existing.id);
     return { ...existing, raw_marks: Number(rawMarks), normalized_percent: pct, verification_status: verificationStatus };
   }
   const id = newId('cut');
-  db.prepare(
+  await db.prepare(
     `INSERT INTO ssc_cutoff_history (id, year, category, list, raw_marks, max_marks, normalized_percent, source_url, verification_status, notes, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, Number(year), category, list, Number(rawMarks), Number(maxMarks), pct, sourceUrl, verificationStatus, notes, now());
@@ -105,13 +105,13 @@ export function addHistoricalCutoff(row) {
  * Prefers VERIFIED rows; falls back to UNVERIFIED reference rows but flags
  * that in the returned snapshot so nobody mistakes it for official data.
  */
-export function resolveBaseline(cfg = getSscConfig()) {
+export async function resolveBaseline(cfg = getSscConfig()) {
   const c = cfg.cutoff;
   if (c.baselineSource === 'CUSTOM' && c.customBaselinePercent != null) {
     return { percent: Number(c.customBaselinePercent), source: 'CUSTOM', includesUnverified: false, years: [] };
   }
   const db = getDb();
-  let rows = db
+  let rows = await db
     .prepare(
       `SELECT year, normalized_percent, verification_status FROM ssc_cutoff_history
        WHERE category = 'UR' AND list = 'GENERAL' ORDER BY year DESC`,
@@ -151,9 +151,9 @@ export function resolveBaseline(cfg = getSscConfig()) {
  * Returns null when there is NOT enough reliable data — the caller must then
  * require an administrator classification instead of inventing a score.
  */
-export function metadataDifficulty(paperId, cfg = getSscConfig()) {
+export async function metadataDifficulty(paperId, cfg = getSscConfig()) {
   const db = getDb();
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT difficulty, COUNT(*) AS n FROM questions
        WHERE paper = ? AND is_duplicate = 0 AND correct_answer IS NOT NULL
@@ -185,7 +185,7 @@ export function metadataDifficulty(paperId, cfg = getSscConfig()) {
  * (config, difficulty, baseline) — the caller persists the result once.
  * `randomFn` is injectable for deterministic tests; defaults to crypto.
  */
-export function computeCutoff(cfg = getSscConfig(), { difficulty = null, baseline = null, randomFn = secureRandomFloat } = {}) {
+export async function computeCutoff(cfg = getSscConfig(), { difficulty = null, baseline = null, randomFn = secureRandomFloat } = {}) {
   const c = cfg.cutoff;
   const mode = cfg.cutoffMode;
   const marksOutOf200 = (pct) => round2((pct / 100) * 200);
@@ -218,7 +218,7 @@ export function computeCutoff(cfg = getSscConfig(), { difficulty = null, baselin
       err.status = 422;
       throw err;
     }
-    const base = baseline || resolveBaseline(cfg);
+    const base = baseline || await resolveBaseline(cfg);
     const basePct = Number(base.percent);
     const adj = Number(c.difficultyAdjustments?.[difficulty] ?? 0);
     const adjusted = basePct + adj;

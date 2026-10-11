@@ -34,7 +34,7 @@ export function statsFor(questionIds) {
 }
 
 /** Mastery over the whole official PYQ corpus (or a filtered subset). */
-export function masteryOverview(filters = {}) {
+export async function masteryOverview(filters = {}) {
   const db = getDb();
   const clauses = ["q.is_duplicate = 0", "q.source_type = 'OFFICIAL_PYQ'"];
   const params = [];
@@ -46,7 +46,7 @@ export function masteryOverview(filters = {}) {
     clauses.push('q.exam = ?');
     params.push(filters.exam);
   }
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT q.id, q.estimated_time_seconds, s.attempt_count, s.correct_count,
               s.incorrect_count, s.skipped_count, s.average_time_seconds, s.last_attempted_at

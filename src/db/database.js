@@ -137,7 +137,7 @@ export function toNumberedPlaceholders(sql) {
 /** Append ON CONFLICT DO NOTHING when the source used INSERT OR IGNORE. */
 function withConflictNoop(sql, converted) {
   if (!/\bINSERT\s+OR\s+IGNORE\b/i.test(sql)) return converted;
-  const m = converted.match(/^(\s*INSERT\s+INTO\s+[^\n]*?VALUES\s*\([\s\S]*?\))\s*$/i);
+  const m = converted.match(/^(\s*INSERT\s+INTO[\s\S]*?VALUES\s*\([\s\S]*?\))\s*;?\s*$/i);
   if (!m) return converted;
   return `${m[1]} ON CONFLICT DO NOTHING`;
 }
@@ -244,6 +244,43 @@ function makeSqliteDatabase(handle) {
   };
 }
 
+/* ------------------------------------------------------------- Postgres handle */
+
+/**
+ * A synchronous-looking handle over the Postgres pool.
+ *
+ * The whole app calls `const db = getDb()` and then `db.prepare(sql).get(...)`
+ * synchronously — 53 sites that must not change. `prepare()` therefore returns
+ * an object whose methods are async, and every call site awaits them (awaiting
+ * a non-promise is a no-op, so SQLite stays synchronous).
+ */
+function makePgDatabase() {
+  const handle = {
+    prepare: (sql) => new PgStatement(sql),
+    exec: (sql) => {
+      // Returns a promise so callers can await DDL; statements are serialised
+      // on one client so ordering is preserved.
+      return getPool().then(async (pool) => {
+        const client = await pool.connect();
+        try {
+          for (const stmt of splitStatements(sql)) {
+            // eslint-disable-next-line no-await-in-loop
+            await client.query(stmt);
+          }
+        } finally {
+          client.release();
+        }
+      });
+    },
+    close: () => {
+      const p = pgPool;
+      pgPool = null;
+      return p ? p.end() : Promise.resolve();
+    },
+  };
+  return handle;
+}
+
 /* ------------------------------------------------------------------- bootstrap */
 
 let db = null;
@@ -300,20 +337,7 @@ async function applyPgSchema() {
 
 async function initPg() {
   await applyPgSchema();
-  const pool = await getPool();
-  return {
-    prepare: (sql) => new PgStatement(sql),
-    exec: async (sql) => {
-      for (const stmt of splitStatements(sql)) {
-        // eslint-disable-next-line no-await-in-loop
-        await pool.query(stmt);
-      }
-    },
-    close: async () => {
-      await pool.end();
-      pgPool = null;
-    },
-  };
+  return makePgDatabase();
 }
 
 function initSqlite() {
@@ -341,18 +365,18 @@ function initSqlite() {
 /**
  * Return the database handle.
  *
- * SQLite: the handle itself (synchronous — unchanged behaviour).
- * Postgres: a Promise resolving to the handle. Call sites on the Postgres
- * path `await` it; `await` on a non-promise is a no-op, so one codebase
- * serves both drivers.
+ * Always synchronous: SQLite returns the real handle, Postgres returns a
+ * proxy whose `prepare()` methods are async. Callers `await` those methods,
+ * which is a no-op on SQLite, so one codebase serves both drivers.
+ *
+ * The first call on the Postgres path must be preceded by `await dbReady()`
+ * (server bootstrap does this), so the handle is never used before the schema
+ * has been applied.
  */
 export function getDb() {
   if (usingPostgres) {
-    if (!schemaReady) schemaReady = initPg();
-    return schemaReady.then((h) => {
-      db = h;
-      return h;
-    });
+    if (!db) db = makePgDatabase();
+    return db;
   }
   if (!db) db = initSqlite();
   return db;
@@ -360,6 +384,11 @@ export function getDb() {
 
 /** Await the database handle. Correct on both drivers. */
 export async function dbReady() {
+  if (usingPostgres) {
+    if (!schemaReady) schemaReady = initPg();
+    db = await schemaReady;
+    return db;
+  }
   return getDb();
 }
 
@@ -415,10 +444,9 @@ export function tx(fn) {
   }
   const d = getDb();
   d.exec('BEGIN IMMEDIATE');
+  let result;
   try {
-    const result = fn(d);
-    d.exec('COMMIT');
-    return result;
+    result = fn(d);
   } catch (err) {
     try {
       d.exec('ROLLBACK');
@@ -427,6 +455,26 @@ export function tx(fn) {
     }
     throw err;
   }
+  // An async callback settles after the synchronous statements above; wait for
+  // it before COMMIT so its writes still sit inside the transaction.
+  if (result && typeof result.then === 'function') {
+    return result.then(
+      (r) => {
+        d.exec('COMMIT');
+        return r;
+      },
+      (err) => {
+        try {
+          d.exec('ROLLBACK');
+        } catch {
+          /* ignore */
+        }
+        throw err;
+      },
+    );
+  }
+  d.exec('COMMIT');
+  return result;
 }
 
 /* ================================================================ SQLite migrations */

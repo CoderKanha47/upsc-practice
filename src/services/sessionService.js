@@ -31,7 +31,7 @@ function rowToSession(row) {
   };
 }
 
-export function createSession({
+export async function createSession({
   mode,
   kindLabel,
   paper,
@@ -55,7 +55,7 @@ export function createSession({
       examId = 'UPSC_CSE_PRELIMS';
     }
   }
-  db.prepare(
+  await db.prepare(
     `INSERT INTO test_sessions
       (id, mode, kind_label, paper, exam, title, status, cycle_id, config_json, question_ids_json,
        seed, started_at, duration_seconds, deadline_at, created_at)
@@ -79,16 +79,16 @@ export function createSession({
   const stmt = db.prepare(
     `INSERT INTO session_answers (session_id, question_id, updated_at) VALUES (?, ?, ?)`,
   );
-  for (const qid of questionIds) stmt.run(id, qid, startedAt);
-  return getSession(id);
+  for (const qid of questionIds) await stmt.run(id, qid, startedAt);
+  return await getSession(id);
 }
 
-export function getSession(id) {
-  const row = getDb().prepare('SELECT * FROM test_sessions WHERE id = ?').get(id);
+export async function getSession(id) {
+  const row = await getDb().prepare('SELECT * FROM test_sessions WHERE id = ?').get(id);
   return rowToSession(row);
 }
 
-export function listSessions({ limit = 20, status = null, mode = null, exam = null } = {}) {
+export async function listSessions({ limit = 20, status = null, mode = null, exam = null } = {}) {
   const clauses = [];
   const params = [];
   if (status) {
@@ -104,15 +104,15 @@ export function listSessions({ limit = 20, status = null, mode = null, exam = nu
     params.push(exam);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  return getDb()
+  return (await getDb()
     .prepare(
       `SELECT * FROM test_sessions ${where} ORDER BY started_at DESC LIMIT ?`,
     )
-    .all(...params, limit)
+    .all(...params, limit))
     .map(rowToSession);
 }
 
-export function activeSessions() {
+export async function activeSessions() {
   return listSessions({ status: 'IN_PROGRESS', limit: CONFIG.SESSION.MAX_ACTIVE_SESSIONS });
 }
 
@@ -208,8 +208,8 @@ export function playableQuestions(session) {
     .filter(Boolean);
 }
 
-export function answerMap(sessionId) {
-  const rows = getDb()
+export async function answerMap(sessionId) {
+  const rows = await getDb()
     .prepare('SELECT * FROM session_answers WHERE session_id = ?')
     .all(sessionId);
   const map = new Map();
@@ -236,19 +236,19 @@ export function isExpired(session, at = now()) {
   return at > session.deadline_at + CONFIG.SESSION.SUBMIT_GRACE_MS;
 }
 
-export function saveAnswer(sessionId, { questionId, answer = null, timeSpentSeconds = 0, marked = null, visited = null }) {
+export async function saveAnswer(sessionId, { questionId, answer = null, timeSpentSeconds = 0, marked = null, visited = null }) {
   const db = getDb();
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   assertEditable(session);
   if (isExpired(session)) {
-    submitSession(sessionId, { auto: true });
+    await submitSession(sessionId, { auto: true });
     const err = new Error('Time is over. The paper was submitted automatically.');
     err.status = 410;
     err.code = 'SESSION_EXPIRED';
     throw err;
   }
 
-  const q = db.prepare('SELECT id, options_json FROM questions WHERE id = ?').get(questionId);
+  const q = await db.prepare('SELECT id, options_json FROM questions WHERE id = ?').get(questionId);
   if (!q) {
     const err = new Error('Question not found in this session.');
     err.status = 404;
@@ -279,13 +279,13 @@ export function saveAnswer(sessionId, { questionId, answer = null, timeSpentSeco
     normalized = upper;
   }
 
-  const prev = answerMap(sessionId).get(questionId);
+  const prev = (await answerMap(sessionId)).get(questionId);
   const time = Math.max(
     Number(prev?.time_spent_seconds || 0),
     Number(timeSpentSeconds || 0),
   );
 
-  db.prepare(
+  await db.prepare(
     `INSERT INTO session_answers (session_id, question_id, answer, marked, visited, time_spent_seconds, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(session_id, question_id) DO UPDATE SET
@@ -306,18 +306,18 @@ export function saveAnswer(sessionId, { questionId, answer = null, timeSpentSeco
   return { saved: true, answer: normalized, remainingSeconds: remainingSeconds(session) };
 }
 
-export function setMarked(sessionId, questionId, marked) {
-  const session = getSession(sessionId);
+export async function setMarked(sessionId, questionId, marked) {
+  const session = await getSession(sessionId);
   assertEditable(session);
   if (isExpired(session)) {
-    submitSession(sessionId, { auto: true });
+    await submitSession(sessionId, { auto: true });
     const err = new Error('Time is over. The paper was submitted automatically.');
     err.status = 410;
     err.code = 'SESSION_EXPIRED';
     throw err;
   }
   const db = getDb();
-  db.prepare(
+  await db.prepare(
     `INSERT INTO session_answers (session_id, question_id, marked, updated_at)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(session_id, question_id) DO UPDATE SET marked = excluded.marked, updated_at = excluded.updated_at`,
@@ -325,7 +325,7 @@ export function setMarked(sessionId, questionId, marked) {
   return { saved: true };
 }
 
-function updateQuestionStats(session, perQuestion, answers, at) {
+async function updateQuestionStats(session, perQuestion, answers, at) {
   const db = getDb();
   const findStat = db.prepare('SELECT * FROM question_stats WHERE question_id = ?');
   const insertStat = db.prepare(
@@ -350,10 +350,10 @@ function updateQuestionStats(session, perQuestion, answers, at) {
     const incorrect = p.result === 'incorrect' ? 1 : 0;
     const skipped = p.result === 'unattempted' ? 1 : 0;
     const timed = time > 0 ? 1 : 0;
-    const existing = findStat.get(p.question_id);
+    const existing = await findStat.get(p.question_id);
 
     if (!existing) {
-      insertStat.run(
+      await insertStat.run(
         p.question_id,
         correct,
         incorrect,
@@ -376,7 +376,7 @@ function updateQuestionStats(session, perQuestion, answers, at) {
     const average = timedCount > 0 ? totalTime / timedCount : null;
     const consecutive = correct ? Number(existing.consecutive_correct) + 1 : 0;
 
-    updateStat.run(
+    await updateStat.run(
       attempts,
       Number(existing.correct_count) + correct,
       Number(existing.incorrect_count) + incorrect,
@@ -393,15 +393,15 @@ function updateQuestionStats(session, perQuestion, answers, at) {
 }
 
 /** Submit (manually or automatically when the timer runs out). */
-export function submitSession(sessionId, { auto = false } = {}) {
+export async function submitSession(sessionId, { auto = false } = {}) {
   const db = getDb();
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
     const err = new Error('Session not found.');
     err.status = 404;
     throw err;
   }
-  if (session.status !== 'IN_PROGRESS') return getSession(sessionId);
+  if (session.status !== 'IN_PROGRESS') return await getSession(sessionId);
 
   const at = now();
 
@@ -410,29 +410,29 @@ export function submitSession(sessionId, { auto = false } = {}) {
   // attempt is finalized as ABSENT instead; partial answers stay preserved
   // in session_answers for diagnostics.
   if (session.cycle_id) {
-    const cycle = getCycle(session.cycle_id);
+    const cycle = await getCycle(session.cycle_id);
     if (cycle) {
       const win = cycleWindow(cycle.cycle_date, getSscConfig());
       if (at > win.closeAt) {
         // ABSENT attempts never carry a score, not even a zero one.
-        getDb()
+        await getDb()
           .prepare(
             `UPDATE test_sessions SET status = 'ABSENT', marks_obtained = NULL, negative_marks = NULL,
                total_marks = NULL, accuracy = NULL WHERE id = ? AND status = 'IN_PROGRESS'`,
           )
           .run(sessionId);
-        return getSession(sessionId);
+        return await getSession(sessionId);
       }
     }
   }
 
-  const questions = db
+  const questions = await db
     .prepare(
       `SELECT id, question_number, correct_answer, marks, negative_marks FROM questions
        WHERE id IN (${session.question_ids.map(() => '?').join(',')})`,
     )
     .all(...session.question_ids);
-  const answerRows = db
+  const answerRows = await db
     .prepare('SELECT * FROM session_answers WHERE session_id = ?')
     .all(sessionId);
   const answerMapLocal = new Map(answerRows.map((a) => [a.question_id, a]));
@@ -453,8 +453,8 @@ export function submitSession(sessionId, { auto = false } = {}) {
   );
   const remaining = Math.max(0, session.duration_seconds - timeUsed);
 
-  tx(() => {
-    db.prepare(
+  await tx(async () => {
+    await db.prepare(
       `UPDATE test_sessions SET status = ?, submitted_at = ?, attempted = ?, correct = ?,
          incorrect = ?, unattempted = ?, marks_obtained = ?, negative_marks = ?,
          total_marks = ?, accuracy = ?, time_used_seconds = ?
@@ -474,14 +474,14 @@ export function submitSession(sessionId, { auto = false } = {}) {
       sessionId,
     );
     for (const p of scored.perQuestion) {
-      db.prepare(
+      await db.prepare(
         `UPDATE session_answers SET is_correct = ? WHERE session_id = ? AND question_id = ?`,
       ).run(p.result === 'correct' ? 1 : p.result === 'incorrect' ? 0 : null, sessionId, p.question_id);
     }
-    updateQuestionStats(session, scored.perQuestion, answerMapLocal, at);
+    await updateQuestionStats(session, scored.perQuestion, answerMapLocal, at);
   });
 
-  const finished = getSession(sessionId);
+  const finished = await getSession(sessionId);
   finished.timeRemainingSeconds = remaining;
   finished.autoSubmitted = auto;
 
@@ -490,8 +490,8 @@ export function submitSession(sessionId, { auto = false } = {}) {
   if (session.cycle_id) {
     try {
       const paperCfg = getPaper(session.paper);
-      if (paperCfg.tier === 'TIER_I') recordTier1Result(session.cycle_id, finished);
-      else if (paperCfg.tier === 'TIER_II') recordTier2Result(session.cycle_id, finished);
+      if (paperCfg.tier === 'TIER_I') await recordTier1Result(session.cycle_id, finished);
+      else if (paperCfg.tier === 'TIER_II') await recordTier2Result(session.cycle_id, finished);
     } catch {
       /* cycle bookkeeping must never fail a scored submission */
     }
@@ -500,8 +500,8 @@ export function submitSession(sessionId, { auto = false } = {}) {
 }
 
 /** Auto-submit if the deadline passed (called on every sync). */
-export function syncSession(sessionId) {
-  const session = getSession(sessionId);
+export async function syncSession(sessionId) {
+  const session = await getSession(sessionId);
   if (!session) {
     const err = new Error('Session not found.');
     err.status = 404;
@@ -509,11 +509,11 @@ export function syncSession(sessionId) {
   }
   let auto = false;
   if (session.status === 'IN_PROGRESS' && now() > session.deadline_at) {
-    submitSession(sessionId, { auto: true });
+    await submitSession(sessionId, { auto: true });
     auto = true;
   }
-  const fresh = getSession(sessionId);
-  const answers = [...answerMap(sessionId).values()].map((a) => ({
+  const fresh = await getSession(sessionId);
+  const answers = [...(await answerMap(sessionId)).values()].map((a) => ({
     question_id: a.question_id,
     answer: a.answer,
     marked: Boolean(a.marked),
@@ -558,9 +558,9 @@ export function publicSession(s) {
 }
 
 /** Full post-submission result: scoring, cutoff/qualification, per-question review. */
-export function buildResult(sessionId) {
+export async function buildResult(sessionId) {
   const db = getDb();
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
     const err = new Error('Session not found.');
     err.status = 404;
@@ -574,7 +574,7 @@ export function buildResult(sessionId) {
   }
   if (session.status === 'ABSENT') {
     // Finalized absence: never fabricate a score from partial data.
-    const cycle = session.cycle_id ? getCycle(session.cycle_id) : null;
+    const cycle = session.cycle_id ? await getCycle(session.cycle_id) : null;
     return {
       session: publicSession(session),
       paper: (() => { const p = getPaper(session.paper); return { id: p.id, title: p.title, questionCount: p.questionCount, durationMinutes: p.durationMinutes, marks: p.marks }; })(),
@@ -589,14 +589,14 @@ export function buildResult(sessionId) {
     };
   }
 
-  const questions = db
+  const questions = await db
     .prepare(
       `SELECT * FROM questions WHERE id IN (${session.question_ids.map(() => '?').join(',')})`,
     )
     .all(...session.question_ids);
   const byId = new Map(questions.map((q) => [q.id, q]));
   const ordered = session.question_ids.map((id) => byId.get(id)).filter(Boolean);
-  const answerRows = db
+  const answerRows = await db
     .prepare('SELECT * FROM session_answers WHERE session_id = ?')
     .all(sessionId);
   const answers = new Map(answerRows.map((a) => [a.question_id, a]));
@@ -656,7 +656,7 @@ export function buildResult(sessionId) {
   // Cycle-linked sessions surface the cycle's persisted cutoff (SSC Sunday
   // cycle), never a generic shortlisting label — the cutoff snapshot stored
   // on the cycle is the authoritative, immutable reference for this attempt.
-  const cycleRow = session.cycle_id ? getCycle(session.cycle_id) : null;
+  const cycleRow = session.cycle_id ? await getCycle(session.cycle_id) : null;
   let qualification = resultQualification(scored.marksObtained, session.paper, CONFIG);
   if (cycleRow && paper.tier === 'TIER_I') {
     const total = session.total_marks ?? paper.marks;

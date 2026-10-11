@@ -88,18 +88,18 @@ function rowToCycle(row) {
   };
 }
 
-export function getCycle(cycleId) {
-  return rowToCycle(getDb().prepare('SELECT * FROM ssc_cycles WHERE id = ?').get(cycleId));
+export async function getCycle(cycleId) {
+  return rowToCycle(await getDb().prepare('SELECT * FROM ssc_cycles WHERE id = ?').get(cycleId));
 }
 
-export function getCycleByDate(dateKey) {
-  return rowToCycle(getDb().prepare('SELECT * FROM ssc_cycles WHERE cycle_date = ?').get(dateKey));
+export async function getCycleByDate(dateKey) {
+  return rowToCycle(await getDb().prepare('SELECT * FROM ssc_cycles WHERE cycle_date = ?').get(dateKey));
 }
 
-export function listCycles({ limit = 52 } = {}) {
-  return getDb()
+export async function listCycles({ limit = 52 } = {}) {
+  return (await getDb()
     .prepare('SELECT * FROM ssc_cycles ORDER BY cycle_date DESC LIMIT ?')
-    .all(Math.min(500, Number(limit) || 52))
+    .all(Math.min(500, Number(limit) || 52)))
     .map(rowToCycle);
 }
 
@@ -110,16 +110,16 @@ export function listCycles({ limit = 52 } = {}) {
  * exactly once. Concurrent callers are safe: the UNIQUE(cycle_date) constraint
  * plus a retry means only one generation is persisted; everyone else reuses it.
  */
-export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, forceRegenerateCutoff = false, randomFn = undefined } = {}) {
+export async function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, forceRegenerateCutoff = false, randomFn = undefined } = {}) {
   const cfg = getSscConfig();
-  const existing = getCycleByDate(dateKey);
+  const existing = await getCycleByDate(dateKey);
   if (existing && !forceRegenerateCutoff) {
     // Lazy finalization on access: a cycle whose window already closed is
     // settled here rather than handed back as if it were still live.
     // `currentCycle()` cannot cover this — it only resolves the current Sunday.
     if (cfg.finalization?.lazyFinalizeOnAccess !== false && now() > cycleWindow(dateKey, cfg).closeAt) {
-      finalizeCycle(existing.id, { at: now() });
-      return getCycle(existing.id);
+      await finalizeCycle(existing.id, { at: now() });
+      return await getCycle(existing.id);
     }
     return existing;
   }
@@ -130,7 +130,7 @@ export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, force
   let difficultySource = effDifficulty ? 'MANUAL' : null;
   let difficultyMeta = null;
   if (!effDifficulty && cfg.cutoffMode === 'DIFFICULTY_AWARE') {
-    const stored = getDb()
+    const stored = await getDb()
       .prepare(
         `SELECT difficulty FROM paper_difficulty
          WHERE paper_id = 'SSC_T1' AND (cycle_date = ? OR cycle_date IS NULL)
@@ -144,7 +144,7 @@ export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, force
   }
   if (!effDifficulty && cfg.cutoffMode === 'DIFFICULTY_AWARE') {
     if (cfg.difficultyAssignment === 'METADATA_WHEN_RELIABLE') {
-      const meta = metadataDifficulty('SSC_T1', cfg);
+      const meta = await metadataDifficulty('SSC_T1', cfg);
       difficultyMeta = meta;
       if (meta.sufficient) {
         effDifficulty = meta.difficulty;
@@ -161,8 +161,8 @@ export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, force
     }
   }
 
-  const baseline = cfg.cutoffMode === 'DIFFICULTY_AWARE' ? resolveBaseline(cfg) : null;
-  const cutoff = computeCutoff(cfg, { difficulty: effDifficulty, baseline, randomFn });
+  const baseline = cfg.cutoffMode === 'DIFFICULTY_AWARE' ? await resolveBaseline(cfg) : null;
+  const cutoff = await computeCutoff(cfg, { difficulty: effDifficulty, baseline, randomFn });
   const snapshot = {
     ...cutoff,
     generatedAt: new Date(now()).toISOString(),
@@ -182,7 +182,7 @@ export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, force
   const id = cycleIdFor(dateKey);
   const at = now();
   try {
-    getDb()
+    await getDb()
       .prepare(
         `INSERT INTO ssc_cycles
            (id, cycle_date, cutoff_mode, cutoff_percent, cutoff_snapshot_json, difficulty, difficulty_source,
@@ -199,21 +199,21 @@ export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, force
   } catch (err) {
     if (isUniqueViolation(err)) {
       // Another caller won the race — reuse their persisted cutoff.
-      return getCycleByDate(dateKey);
+      return await getCycleByDate(dateKey);
     }
     throw err;
   }
-  return getCycleByDate(dateKey);
+  return await getCycleByDate(dateKey);
 }
 
 /** Current cycle (creating it if needed). Finalizes lazily when past close. */
-export function currentCycle({ at = now(), autoFinalize = true } = {}) {
+export async function currentCycle({ at = now(), autoFinalize = true } = {}) {
   const cfg = getSscConfig();
   const dateKey = cycleDateKey(at, 'Asia/Kolkata');
-  let cycle = getCycleByDate(dateKey);
+  let cycle = await getCycleByDate(dateKey);
   if (!cycle) {
     try {
-      cycle = ensureCycle(dateKey);
+      cycle = await ensureCycle(dateKey);
     } catch (err) {
       if (err?.code === 'DIFFICULTY_REQUIRED') {
         // Cycle cannot be generated yet — surface a shell so the UI can prompt
@@ -227,8 +227,8 @@ export function currentCycle({ at = now(), autoFinalize = true } = {}) {
   if (autoFinalize && cfg.finalization?.lazyFinalizeOnAccess !== false && at > cycleWindow(cycle.cycle_date, cfg).closeAt) {
     // Pass `at` through: finalizeCycle() refuses to close a cycle whose window
     // is still open, so omitting it would silently skip this transition.
-    finalizeCycle(cycle.id, { at });
-    cycle = getCycle(cycle.id);
+    await finalizeCycle(cycle.id, { at });
+    cycle = await getCycle(cycle.id);
   }
   return cycle;
 }
@@ -236,12 +236,12 @@ export function currentCycle({ at = now(), autoFinalize = true } = {}) {
 /* -------------------------------------------------------- record results */
 
 /** Link a full-paper session to a cycle (used when starting Tier-I/Tier-II). */
-export function attachSessionToCycle(sessionId, cycleId, tier) {
-  getDb().prepare('UPDATE test_sessions SET cycle_id = ? WHERE id = ?').run(cycleId, sessionId);
+export async function attachSessionToCycle(sessionId, cycleId, tier) {
+  await getDb().prepare('UPDATE test_sessions SET cycle_id = ? WHERE id = ?').run(cycleId, sessionId);
   const col = tier === 1 ? 'tier1_session_id' : 'tier2_session_id';
   const statusCol = tier === 1 ? 'tier1_status' : 'tier2_status';
-  const status = tier === 1 ? 'IN_PROGRESS' : 'IN_PROGRESS';
-  getDb()
+  const status = 'IN_PROGRESS';
+  await getDb()
     .prepare(`UPDATE ssc_cycles SET ${col} = ?, ${statusCol} = ?, updated_at = ? WHERE id = ?`)
     .run(sessionId, status, now(), cycleId);
 }
@@ -251,9 +251,9 @@ export function attachSessionToCycle(sessionId, cycleId, tier) {
  * qualification server-side from the persisted cutoff. The client can never
  * influence this: the score comes from the scored session row.
  */
-export function recordTier1Result(cycleId, session) {
-  return tx(() => {
-    const cycle = getCycle(cycleId);
+export async function recordTier1Result(cycleId, session) {
+  return tx(async () => {
+    const cycle = await getCycle(cycleId);
     if (!cycle) return null;
     if (cycle.tier1_status === 'COMPLETED' && cycle.tier1_session_id === session.id) return cycle; // idempotent
     const total = Number(session.total_marks || 0);
@@ -264,7 +264,7 @@ export function recordTier1Result(cycleId, session) {
     const tier2Status = qualified
       ? (cfg.tier2Enabled ? 'ELIGIBLE' : 'NOT_ELIGIBLE')
       : 'NOT_ELIGIBLE';
-    getDb()
+    await getDb()
       .prepare(
         `UPDATE ssc_cycles SET tier1_session_id = ?, tier1_status = 'COMPLETED',
            tier1_marks = ?, tier1_total_marks = ?, tier1_percent = ?,
@@ -272,34 +272,34 @@ export function recordTier1Result(cycleId, session) {
          WHERE id = ?`,
       )
       .run(session.id, marks, total || null, percent, qualified ? 'QUALIFIED' : 'NOT_QUALIFIED', tier2Status, now(), cycleId);
-    return getCycle(cycleId);
+    return await getCycle(cycleId);
   });
 }
 
-export function recordTier2Start(cycleId, sessionId, paperId) {
-  getDb()
+export async function recordTier2Start(cycleId, sessionId, paperId) {
+  await getDb()
     .prepare(
       `UPDATE ssc_cycles SET tier2_session_id = ?, tier2_paper_id = ?, tier2_status = 'IN_PROGRESS', updated_at = ? WHERE id = ?`,
     )
     .run(sessionId, paperId, now(), cycleId);
 }
 
-export function recordTier2Result(cycleId, session) {
-  return tx(() => {
-    const cycle = getCycle(cycleId);
+export async function recordTier2Result(cycleId, session) {
+  return tx(async () => {
+    const cycle = await getCycle(cycleId);
     if (!cycle) return null;
     if (cycle.tier2_status === 'COMPLETED' && cycle.tier2_session_id === session.id) return cycle;
     const total = Number(session.total_marks || 0);
     const marks = Number(session.marks_obtained || 0);
     const percent = total > 0 ? Math.round((marks / total) * 10000) / 100 : 0;
-    getDb()
+    await getDb()
       .prepare(
         `UPDATE ssc_cycles SET tier2_session_id = ?, tier2_status = 'COMPLETED',
            tier2_marks = ?, tier2_total_marks = ?, tier2_percent = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(session.id, marks, total || null, percent, now(), cycleId);
-    return getCycle(cycleId);
+    return await getCycle(cycleId);
   });
 }
 
@@ -309,7 +309,7 @@ export function recordTier2Result(cycleId, session) {
  * Server-side eligibility to START a Tier-II full paper in the current cycle.
  * Throws 403/409 with a machine-readable code; the client only displays it.
  */
-export function assertTier2FullPaperAllowed({ at = now() } = {}) {
+export async function assertTier2FullPaperAllowed({ at = now() } = {}) {
   const cfg = getSscConfig();
   if (!cfg.tier2Enabled) {
     const err = new Error('SSC CGL Tier-II full paper is disabled in Admin → SSC Configuration.');
@@ -324,7 +324,7 @@ export function assertTier2FullPaperAllowed({ at = now() } = {}) {
     err.code = 'FULL_PAPER_LOCKED';
     throw err;
   }
-  const cycle = currentCycle({ at });
+  const cycle = await currentCycle({ at });
   if (cycle?.finalized) {
     const err = new Error('This Sunday cycle is already finalized. Wait for the next Sunday cycle.');
     err.status = 409;
@@ -381,10 +381,10 @@ export function tier2Eligible(cycle, cfg = getSscConfig(), at = now()) {
  * and concurrently: the UPDATE is guarded on finalized_at IS NULL inside a
  * transaction, so only one caller performs the transition.
  */
-export function finalizeCycle(cycleId, { at = now(), force = false } = {}) {
+export async function finalizeCycle(cycleId, { at = now(), force = false } = {}) {
   const cfg = getSscConfig();
-  return tx(() => {
-    const cycle = getCycle(cycleId);
+  return tx(async () => {
+    const cycle = await getCycle(cycleId);
     if (!cycle) return null;
     if (cycle.finalized_at != null) return cycle; // idempotent
     const win = cycleWindow(cycle.cycle_date, cfg);
@@ -392,8 +392,8 @@ export function finalizeCycle(cycleId, { at = now(), force = false } = {}) {
 
     const db = getDb();
     // Re-check inside the transaction to defeat concurrent finalizers.
-    const fresh = db.prepare('SELECT finalized_at FROM ssc_cycles WHERE id = ?').get(cycleId);
-    if (fresh.finalized_at != null) return getCycle(cycleId);
+    const fresh = await db.prepare('SELECT finalized_at FROM ssc_cycles WHERE id = ?').get(cycleId);
+    if (fresh.finalized_at != null) return await getCycle(cycleId);
 
     let {
       tier1_status: t1, tier1_session_id: t1sid,
@@ -405,7 +405,7 @@ export function finalizeCycle(cycleId, { at = now(), force = false } = {}) {
     if (t1 === 'IN_PROGRESS' && t1sid) {
       // Case F/E: started but not submitted by the window close → ABSENT.
       // Partial answers stay in session_answers for diagnostics.
-      db.prepare(`UPDATE test_sessions SET status = 'ABSENT' WHERE id = ? AND status = 'IN_PROGRESS'`).run(t1sid);
+      await db.prepare(`UPDATE test_sessions SET status = 'ABSENT' WHERE id = ? AND status = 'IN_PROGRESS'`).run(t1sid);
       t1 = 'ABSENT';
       qual = 'ABSENT';
     } else if (t1 === 'NOT_ATTEMPTED' || !t1sid) {
@@ -417,7 +417,7 @@ export function finalizeCycle(cycleId, { at = now(), force = false } = {}) {
     // --- Tier-II ----------------------------------------------------------
     if (t2 === 'IN_PROGRESS' && t2sid) {
       // Case E: qualified, started, not completed → ABSENT, score stays null.
-      db.prepare(`UPDATE test_sessions SET status = 'ABSENT' WHERE id = ? AND status = 'IN_PROGRESS'`).run(t2sid);
+      await db.prepare(`UPDATE test_sessions SET status = 'ABSENT' WHERE id = ? AND status = 'IN_PROGRESS'`).run(t2sid);
       t2 = 'ABSENT';
     } else if (t2 === 'ELIGIBLE' && cfg.tier2Enabled) {
       // Case B: qualified but never completed Tier-II by close → ABSENT (null score).
@@ -427,25 +427,25 @@ export function finalizeCycle(cycleId, { at = now(), force = false } = {}) {
       t2 = 'NOT_ELIGIBLE';
     }
 
-    db.prepare(
+    await db.prepare(
       `UPDATE ssc_cycles SET tier1_status = ?, qualification_status = ?, tier2_status = ?,
          finalized_at = ?, updated_at = ? WHERE id = ? AND finalized_at IS NULL`,
     ).run(t1, qual, t2, at, at, cycleId);
-    return getCycle(cycleId);
+    return await getCycle(cycleId);
   });
 }
 
 /** Finalize every cycle whose window has closed (cheap lazy sweep). */
-export function finalizeExpiredCycles({ at = now() } = {}) {
-  const rows = getDb()
+export async function finalizeExpiredCycles({ at = now() } = {}) {
+  const rows = await getDb()
     .prepare(`SELECT id FROM ssc_cycles WHERE finalized_at IS NULL ORDER BY cycle_date`)
     .all();
   let done = 0;
   for (const r of rows) {
-    const c = getCycle(r.id);
+    const c = await getCycle(r.id);
     const win = cycleWindow(c.cycle_date, getSscConfig());
     if (at > win.closeAt) {
-      const out = finalizeCycle(r.id, { at });
+      const out = await finalizeCycle(r.id, { at });
       if (out?.finalized_at != null) done += 1;
     }
   }

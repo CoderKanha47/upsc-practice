@@ -12,7 +12,7 @@ import { masteryOverview } from './mastery.js';
 
 const round1 = (n) => Math.round(n * 10) / 10;
 
-function statRows(whereExtra = '', params = []) {
+async function statRows(whereExtra = '', params = []) {
   const db = getDb();
   return db
     .prepare(
@@ -77,15 +77,15 @@ function aggregate(rows, keyFn) {
 }
 
 /** Dashboard-level numbers (optionally scoped to one exam). */
-export function overview({ exam = null } = {}) {
-  const rows = exam ? statRows('AND q.exam = ?', [exam]) : statRows();
+export async function overview({ exam = null } = {}) {
+  const rows = exam ? await statRows('AND q.exam = ?', [exam]) : await statRows();
   const sessionClauses = ["status != 'IN_PROGRESS'"];
   const sessionParams = [];
   if (exam) {
     sessionClauses.push('exam = ?');
     sessionParams.push(exam);
   }
-  const sessions = getDb()
+  const sessions = await getDb()
     .prepare(
       `SELECT id, mode, kind_label, paper, exam, title, status, started_at, marks_obtained,
               total_marks, accuracy, attempted, correct, incorrect, unattempted, duration_seconds,
@@ -112,7 +112,7 @@ export function overview({ exam = null } = {}) {
     ? round1(flagSessions.reduce((s, x) => s + Number(x.accuracy || 0), 0) / flagSessions.length)
     : null;
 
-  const mastery = masteryOverview(exam ? { exam } : {});
+  const mastery = await masteryOverview(exam ? { exam } : {});
 
   return {
     exam: exam || DEFAULT_EXAM,
@@ -135,7 +135,7 @@ export function overview({ exam = null } = {}) {
 }
 
 /** Performance broken down by subject / topic / question type / difficulty. */
-export function performanceBy(dimension, { paper = null, exam = null, minAttempts = 1 } = {}) {
+export async function performanceBy(dimension, { paper = null, exam = null, minAttempts = 1 } = {}) {
   const clauses = [];
   const params = [];
   if (paper) {
@@ -146,7 +146,7 @@ export function performanceBy(dimension, { paper = null, exam = null, minAttempt
     clauses.push('AND q.exam = ?');
     params.push(exam);
   }
-  const rows = statRows(clauses.join(' '), params);
+  const rows = await statRows(clauses.join(' '), params);
   const keyMap = { subject: (r) => r.subject, topic: (r) => r.topic, questionType: (r) => r.question_type, difficulty: (r) => r.difficulty };
   const fn = keyMap[dimension];
   if (!fn) {
@@ -161,9 +161,9 @@ export function performanceBy(dimension, { paper = null, exam = null, minAttempt
 }
 
 /** Average / median time, fastest & slowest questions, time by category. */
-export function timeAnalytics() {
-  const rows = statRows();
-  const detail = getDb()
+export async function timeAnalytics() {
+  const rows = await statRows();
+  const detail = await getDb()
     .prepare(
       `SELECT s.question_id, s.best_time_seconds, s.average_time_seconds, s.timed_count,
               q.question_number, q.year, q.paper, q.subject, q.question_type, q.difficulty,
@@ -206,7 +206,7 @@ export function timeAnalytics() {
 }
 
 /** Score trend across submitted tests — "Am I improving?" */
-export function trend(limit = 30, { exam = null, mode = null } = {}) {
+export async function trend(limit = 30, { exam = null, mode = null } = {}) {
   const clauses = ["status != 'IN_PROGRESS'"];
   const params = [];
   if (exam) {
@@ -217,14 +217,14 @@ export function trend(limit = 30, { exam = null, mode = null } = {}) {
     clauses.push('mode = ?');
     params.push(mode);
   }
-  const sessions = getDb()
+  const sessions = (await getDb()
     .prepare(
       `SELECT id, title, paper, exam, mode, kind_label, started_at, accuracy, marks_obtained,
               total_marks, attempted, correct, incorrect, time_used_seconds
        FROM test_sessions WHERE ${clauses.join(' AND ')}
        ORDER BY started_at DESC LIMIT ?`,
     )
-    .all(...params, limit)
+    .all(...params, limit))
     .reverse();
   return sessions.map((s) => ({
     id: s.id,
@@ -267,8 +267,8 @@ function tierOfPaper(paperId) {
   return null; // UPSC papers
 }
 
-export function progressSeries({ exams = null, kinds = null, tiers = null, modes = null, from = null, to = null, limit = 500 } = {}) {
-  const rows = getDb()
+export async function progressSeries({ exams = null, kinds = null, tiers = null, modes = null, from = null, to = null, limit = 500 } = {}) {
+  const rows = await getDb()
     .prepare(
       `SELECT id, exam, mode, paper, title, status, started_at, submitted_at, marks_obtained, total_marks, accuracy
        FROM test_sessions WHERE status IN ('SUBMITTED', 'AUTO_SUBMITTED')
@@ -309,7 +309,7 @@ export function progressSeries({ exams = null, kinds = null, tiers = null, modes
   }
   // ABSENT / NOT_ELIGIBLE / NOT_QUALIFIED never invent graph points — they are
   // surfaced as counts and in the weekly cycle history instead.
-  const absentRows = getDb()
+  const absentRows = await getDb()
     .prepare(
       `SELECT status, COUNT(*) AS n FROM test_sessions WHERE status = 'ABSENT' GROUP BY status`,
     )
@@ -324,7 +324,7 @@ export function progressSeries({ exams = null, kinds = null, tiers = null, modes
 }
 
 /** PYQs the user has repeatedly failed — the learning loop entry point. */
-export function repeatedFailures(limit = 25, { exam = null } = {}) {
+export async function repeatedFailures(limit = 25, { exam = null } = {}) {
   const db = getDb();
   const clauses = ['s.incorrect_count >= 2', 'q.is_duplicate = 0'];
   const params = [];
@@ -332,7 +332,7 @@ export function repeatedFailures(limit = 25, { exam = null } = {}) {
     clauses.push('q.exam = ?');
     params.push(exam);
   }
-  return db
+  return (await db
     .prepare(
       `SELECT q.id, q.year, q.exam, q.paper, q.question_number, q.question_text, q.subject, q.topic,
               q.question_type, q.difficulty, q.explanation, q.concept, q.source_type,
@@ -343,7 +343,7 @@ export function repeatedFailures(limit = 25, { exam = null } = {}) {
        ORDER BY (s.incorrect_count - s.correct_count) DESC, s.incorrect_count DESC
        LIMIT ?`,
     )
-    .all(...params, limit)
+    .all(...params, limit))
     .map((r) => ({
       ...r,
       mastery: false,
@@ -352,9 +352,9 @@ export function repeatedFailures(limit = 25, { exam = null } = {}) {
 }
 
 /** Estimated vs actual per-question calibration (feeds the timing model). */
-export function calibrationReport(limit = 40) {
+export async function calibrationReport(limit = 40) {
   const db = getDb();
-  return db
+  return (await db
     .prepare(
       `SELECT q.id, q.year, q.paper, q.question_number, q.question_type, q.difficulty,
               q.estimated_time_seconds, s.average_time_seconds, s.timed_count, s.attempt_count
@@ -363,7 +363,7 @@ export function calibrationReport(limit = 40) {
        ORDER BY ABS(s.average_time_seconds - q.estimated_time_seconds) DESC
        LIMIT ?`,
     )
-    .all(limit)
+    .all(limit))
     .map((r) => ({
       id: r.id,
       question: `Q${r.question_number} (${r.year} ${r.paper})`,
@@ -377,10 +377,10 @@ export function calibrationReport(limit = 40) {
 }
 
 /** Corpus coverage per exam: how much of the configured year range is in the DB? */
-export function coverage(examId = DEFAULT_EXAM) {
+export async function coverage(examId = DEFAULT_EXAM) {
   const db = getDb();
   const exam = getExam(examId);
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT year, paper, COUNT(*) AS n,
               SUM(CASE WHEN correct_answer IS NOT NULL AND correct_answer != '' THEN 1 ELSE 0 END) AS keyed,

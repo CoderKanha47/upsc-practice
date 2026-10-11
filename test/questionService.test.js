@@ -30,21 +30,21 @@ const BASE = {
   source_type: 'OFFICIAL_PYQ',
 };
 
-test('valid question inserts with computed estimate and dup key', () => {
-  const res = insertQuestion({ ...BASE, question_number: 1 });
+test('valid question inserts with computed estimate and dup key', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 1 });
   assert.equal(res.status, 'inserted');
   assert.ok(res.id);
   assert.equal(res.state, 'PARSED');
 });
 
-test('same year+paper+question_number is rejected as a duplicate', () => {
-  const res = insertQuestion({ ...BASE, question_number: 1 });
+test('same year+paper+question_number is rejected as a duplicate', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 1 });
   assert.equal(res.status, 'duplicate');
   assert.match(res.reason, /2024\|GS1\|1/);
 });
 
-test('same content from another source is flagged, not silently dropped', () => {
-  const res = insertQuestion({
+test('same content from another source is flagged, not silently dropped', async () => {
+  const res = await insertQuestion({
     ...BASE,
     question_number: 90,
     source_type: 'CUSTOM',
@@ -64,57 +64,57 @@ test('structural validation rejects bad answers and short text', () => {
   assert.equal(unkeyed.state, 'REVIEW_REQUIRED');
 });
 
-test('question without an answer key lands in REVIEW_REQUIRED', () => {
-  const res = insertQuestion({ ...BASE, question_number: 77, correct_answer: null });
+test('question without an answer key lands in REVIEW_REQUIRED', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 77, correct_answer: null });
   assert.equal(res.status, 'inserted');
   assert.equal(res.state, 'REVIEW_REQUIRED');
   assert.equal(res.flaggedForReview, true);
 });
 
-test('verify requires an answer key', () => {
-  const res = insertQuestion({ ...BASE, question_number: 78, correct_answer: null });
-  assert.throws(
+test('verify requires an answer key', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 78, correct_answer: null });
+  await assert.rejects(
     () => verifyQuestion(res.id),
     (err) => err.code === 'NO_ANSWER',
   );
 });
 
-test('verify promotes to VERIFIED and coverage updates', () => {
-  const res = insertQuestion({ ...BASE, question_number: 79 });
-  const v = verifyQuestion(res.id);
+test('verify promotes to VERIFIED and coverage updates', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 79 });
+  const v = await verifyQuestion(res.id);
   assert.equal(v.validation_state, 'VERIFIED');
-  refreshCoverage();
+  await refreshCoverage();
 });
 
-test('verified official PYQ text is locked; metadata stays editable', () => {
-  const res = insertQuestion({ ...BASE, question_number: 80 });
-  verifyQuestion(res.id);
-  assert.throws(
+test('verified official PYQ text is locked; metadata stays editable', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 80 });
+  await verifyQuestion(res.id);
+  await assert.rejects(
     () => updateQuestion(res.id, { question_text: 'rewritten text' }),
     (err) => err.code === 'TEXT_LOCKED' && err.status === 423,
   );
-  const ok = updateQuestion(res.id, { difficulty: 'hard', topic: 'Constitution' });
+  const ok = await updateQuestion(res.id, { difficulty: 'hard', topic: 'Constitution' });
   assert.equal(ok.updated, true);
   assert.equal(ok.question.difficulty, 'hard');
 });
 
-test('verified official PYQs cannot be deleted, only marked duplicate', () => {
-  const res = insertQuestion({ ...BASE, question_number: 81 });
-  verifyQuestion(res.id);
-  assert.throws(
+test('verified official PYQs cannot be deleted, only marked duplicate', async () => {
+  const res = await insertQuestion({ ...BASE, question_number: 81 });
+  await verifyQuestion(res.id);
+  await assert.rejects(
     () => deleteQuestion(res.id),
     (err) => err.code === 'LOCKED',
   );
-  const dup = markDuplicate(res.id);
+  const dup = await markDuplicate(res.id);
   assert.equal(dup.is_duplicate, 1);
   // once marked duplicate it no longer collides
-  const again = insertQuestion({ ...BASE, question_number: 81 });
+  const again = await insertQuestion({ ...BASE, question_number: 81 });
   assert.equal(again.status, 'inserted');
 });
 
-test('coverage registry reports DATA_MISSING / PARTIAL honestly', () => {
-  refreshCoverage();
-  const found = searchQuestions({ year: 2024, paper: 'GS1' });
+test('coverage registry reports DATA_MISSING / PARTIAL honestly', async () => {
+  await refreshCoverage();
+  const found = await searchQuestions({ year: 2024, paper: 'GS1' });
   assert.ok(found.total > 0);
   const stats = found.items[0];
   assert.ok(stats.year === 2024);

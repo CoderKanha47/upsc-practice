@@ -91,7 +91,7 @@ export function findContentDuplicate(text) {
  *   2) content hash (same text from a different source)
  * and are recorded/reported rather than silently dropped.
  */
-export function insertQuestion(raw, { batchId = null, source = null } = {}) {
+export async function insertQuestion(raw, { batchId = null, source = null } = {}) {
   const db = getDb();
   const data = { ...raw };
   data.source_type = data.source_type || 'OFFICIAL_PYQ';
@@ -145,7 +145,7 @@ export function insertQuestion(raw, { batchId = null, source = null } = {}) {
 
   const state = data.validation_state || v.state;
 
-  db.prepare(
+  await db.prepare(
     `INSERT INTO questions
       (id, year, exam, paper, tier, shift, question_number, question_text, passage, group_id, group_index,
        options_json, correct_answer, subject, topic, subtopic, difficulty, question_type,
@@ -192,7 +192,7 @@ export function insertQuestion(raw, { batchId = null, source = null } = {}) {
   );
 
   if (batchId) {
-    db.prepare(
+    await db.prepare(
       `INSERT INTO question_stats (question_id, attempt_count, correct_count, incorrect_count,
         skipped_count, total_time_seconds, timed_count, consecutive_correct)
        VALUES (?, 0, 0, 0, 0, 0, 0, 0)
@@ -210,11 +210,11 @@ export function insertQuestion(raw, { batchId = null, source = null } = {}) {
   };
 }
 
-export function insertMany(items, { batchId = null, source = null } = {}) {
+export async function insertMany(items, { batchId = null, source = null } = {}) {
   const summary = { total: items.length, inserted: 0, duplicates: 0, rejected: 0, review: 0, errors: [], duplicatesList: [] };
-  tx(() => {
+  await tx(async () => {
     for (const item of items) {
-      const res = insertQuestion(item, { batchId, source });
+      const res = await insertQuestion(item, { batchId, source });
       if (res.status === 'inserted') {
         summary.inserted += 1;
         if (res.state === 'REVIEW_REQUIRED') summary.review += 1;
@@ -245,7 +245,7 @@ const METADATA_FIELDS = [
   'question_number', 'year', 'validation_state', 'source_type',
 ];
 
-export function updateQuestion(id, patch, { actor = 'admin', allowTextEdit = false } = {}) {
+export async function updateQuestion(id, patch, { actor = 'admin', allowTextEdit = false } = {}) {
   const db = getDb();
   const before = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!before) {
@@ -300,8 +300,8 @@ export function updateQuestion(id, patch, { actor = 'admin', allowTextEdit = fal
 
   updates.push('updated_at = ?');
   params.push(now(), id);
-  tx(() => {
-    db.prepare(`UPDATE questions SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  await tx(async () => {
+    await db.prepare(`UPDATE questions SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     audit('question', id, 'update_metadata', pick(before, Object.keys(after)), after, actor);
   });
   return { updated: true, question: db.prepare('SELECT * FROM questions WHERE id = ?').get(id) };
@@ -313,7 +313,7 @@ function pick(obj, keys) {
   return out;
 }
 
-export function verifyQuestion(id, { actor = 'admin' } = {}) {
+export async function verifyQuestion(id, { actor = 'admin' } = {}) {
   const db = getDb();
   const before = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!before) {
@@ -327,13 +327,13 @@ export function verifyQuestion(id, { actor = 'admin' } = {}) {
     err.code = 'NO_ANSWER';
     throw err;
   }
-  db.prepare('UPDATE questions SET validation_state = ?, updated_at = ? WHERE id = ?').run('VERIFIED', now(), id);
+  await db.prepare('UPDATE questions SET validation_state = ?, updated_at = ? WHERE id = ?').run('VERIFIED', now(), id);
   audit('question', id, 'verify', { validation_state: before.validation_state }, { validation_state: 'VERIFIED' }, actor);
-  refreshCoverage();
+  await refreshCoverage();
   return db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
 }
 
-export function markDuplicate(id, { actor = 'admin' } = {}) {
+export async function markDuplicate(id, { actor = 'admin' } = {}) {
   const db = getDb();
   const before = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!before) {
@@ -341,13 +341,13 @@ export function markDuplicate(id, { actor = 'admin' } = {}) {
     err.status = 404;
     throw err;
   }
-  db.prepare('UPDATE questions SET is_duplicate = 1, updated_at = ? WHERE id = ?').run(now(), id);
+  await db.prepare('UPDATE questions SET is_duplicate = 1, updated_at = ? WHERE id = ?').run(now(), id);
   audit('question', id, 'mark_duplicate', { is_duplicate: 0 }, { is_duplicate: 1 }, actor);
-  refreshCoverage();
+  await refreshCoverage();
   return { id, is_duplicate: 1 };
 }
 
-export function deleteQuestion(id, { actor = 'admin' } = {}) {
+export async function deleteQuestion(id, { actor = 'admin' } = {}) {
   const db = getDb();
   const before = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   if (!before) {
@@ -361,16 +361,16 @@ export function deleteQuestion(id, { actor = 'admin' } = {}) {
     err.code = 'LOCKED';
     throw err;
   }
-  db.prepare('DELETE FROM questions WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM questions WHERE id = ?').run(id);
   audit('question', id, 'delete', before, null, actor);
-  refreshCoverage();
+  await refreshCoverage();
   return { deleted: true, id };
 }
 
 /** Recompute the paper coverage registry (drives the PYQ explorer), for every exam. */
-export function refreshCoverage() {
+export async function refreshCoverage() {
   const db = getDb();
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT year, paper, COUNT(*) AS n,
               SUM(CASE WHEN correct_answer IS NOT NULL AND correct_answer != '' THEN 1 ELSE 0 END) AS keyed,
@@ -395,7 +395,7 @@ export function refreshCoverage() {
         else if (found > 0 && (keyed < paper.questionCount || verified < paper.questionCount)) status = 'PARTIAL';
         else if (found > 0 && keyed >= paper.questionCount && verified >= paper.questionCount) status = 'VERIFIED';
         else if (found > 0) status = 'IMPORTED';
-        db.prepare(
+        await db.prepare(
           `INSERT INTO paper_coverage (year, paper, exam, tier, shift, status, official_count, verified_count, keyed_count, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(year, paper) DO UPDATE SET
@@ -409,7 +409,7 @@ export function refreshCoverage() {
   }
 }
 
-export function searchQuestions(filters = {}, { page = 1, pageSize = 25 } = {}) {
+export async function searchQuestions(filters = {}, { page = 1, pageSize = 25 } = {}) {
   const db = getDb();
   const clauses = ['1=1'];
   const params = [];
@@ -447,9 +447,9 @@ export function searchQuestions(filters = {}, { page = 1, pageSize = 25 } = {}) 
   if (filters.state === 'duplicates') clauses.push('content_hash IN (SELECT content_hash FROM questions GROUP BY content_hash HAVING COUNT(*) > 1)');
 
   const where = clauses.join(' AND ');
-  const total = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE ${where}`).get(...params).n;
+  const total = (await db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE ${where}`).get(...params)).n;
   const offset = (Math.max(1, page) - 1) * pageSize;
-  const items = db
+  const items = await db
     .prepare(
       `SELECT * FROM questions WHERE ${where} ORDER BY year DESC, paper, question_number ASC
        LIMIT ? OFFSET ?`,

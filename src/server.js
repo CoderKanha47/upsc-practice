@@ -2,12 +2,13 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import CONFIG from '../config/exam.config.js';
-import { getDb, usingPostgres, getPool } from './db/database.js';
+import { dbReady, usingPostgres, getPool } from './db/database.js';
 import { withDbClient } from './db/context.js';
 import apiRouter from './routes/api.js';
 import adminRouter from './routes/admin.js';
 import { seedHistoricalCutoffs } from './services/cutoff.js';
 import { finalizeExpiredCycles } from './services/sscCycle.js';
+import { loadSscConfig } from './services/sscConfig.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -20,7 +21,8 @@ async function dbMiddleware(req, res, next) {
 }
 
 export async function createApp() {
-  await getDb(); // ensure schema exists
+  await dbReady(); // ensure schema exists
+  await loadSscConfig(); // warm the SSC config cache so cycle logic never sees defaults-only
 
   const app = express();
   app.disable('x-powered-by');
@@ -58,10 +60,10 @@ export async function startServer() {
 
   // Reference cutoffs are seeded before the first request so the admin
   // dashboard never shows a half-empty table.
-  seedHistoricalCutoffs();
+  await seedHistoricalCutoffs();
   // Cycles whose Sunday window closed while the app was down are settled here
   // rather than waiting for someone to open that cycle's page.
-  finalizeExpiredCycles();
+  await finalizeExpiredCycles();
 
   return new Promise((resolve) => {
     const server = app.listen(CONFIG.APP.PORT, CONFIG.APP.HOST, () => {

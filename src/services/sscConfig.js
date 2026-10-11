@@ -78,24 +78,40 @@ export function sscConfigDefaults() {
   return JSON.parse(JSON.stringify(SSC_CONFIG_DEFAULTS));
 }
 
+/**
+ * Cached effective config. The DB read is async (Postgres) but this function
+ * must stay sync because every cycle/window/cutoff call site uses it inline,
+ * so the value is loaded once via `loadSscConfig()` at boot and refreshed on
+ * every save. Before the first load it reports pure defaults, never a broken
+ * half-object.
+ */
+let cachedConfig = null;
+
+export async function loadSscConfig() {
+  const row = await getDb().prepare('SELECT value FROM settings WHERE key = ?').get(CONFIG_KEY);
+  const stored = row ? parseJson(row.value, {}) || {} : {};
+  cachedConfig = deepMerge(sscConfigDefaults(), stored);
+  return cachedConfig;
+}
+
 /** Current effective config (defaults merged with any stored overrides). */
 export function getSscConfig() {
-  const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(CONFIG_KEY);
-  const stored = row ? parseJson(row.value, {}) || {} : {};
-  return deepMerge(sscConfigDefaults(), stored);
+  if (!cachedConfig) return sscConfigDefaults();
+  return cachedConfig;
 }
 
 /** Persist a (partial) config update. Returns the new effective config. */
-export function setSscConfig(patch, actor = 'admin') {
+export async function setSscConfig(patch, actor = 'admin') {
   const before = getSscConfig();
   const after = deepMerge(before, patch || {});
   validateSscConfig(after);
-  getDb()
+  await getDb()
     .prepare(
       `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     )
     .run(CONFIG_KEY, toJson(after), now());
+  cachedConfig = after;
   return after;
 }
 
@@ -148,4 +164,4 @@ export function validateSscConfig(cfg) {
   return true;
 }
 
-export default { getSscConfig, setSscConfig, validateSscConfig, sscConfigDefaults, CONFIG_KEY, CUTOFF_MODES };
+export default { getSscConfig, setSscConfig, loadSscConfig, validateSscConfig, sscConfigDefaults, CONFIG_KEY, CUTOFF_MODES };

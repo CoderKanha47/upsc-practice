@@ -52,7 +52,7 @@ function makeQuestion(paper, year, number, subjects, types) {
   };
 }
 
-export function seedFixtures({ gsYears = 8, csatYears = 4, gsPerYear = 25, csatPerYear = 25 } = {}) {
+export async function seedFixtures({ gsYears = 8, csatYears = 4, gsPerYear = 25, csatPerYear = 25 } = {}) {
   const items = [];
   for (let i = 0; i < gsYears; i += 1) {
     const year = 2026 - i;
@@ -66,7 +66,7 @@ export function seedFixtures({ gsYears = 8, csatYears = 4, gsPerYear = 25, csatP
       items.push(makeQuestion('CSAT', year, n, CSAT_SUBJECTS, CSAT_TYPES));
     }
   }
-  return insertMany(items, { source: 'TEST FIXTURE' });
+  return await insertMany(items, { source: 'TEST FIXTURE' });
 }
 
 const SSC_T1_SUBJECTS = [
@@ -97,7 +97,7 @@ function makeSscQuestion(year, number) {
   };
 }
 
-export function seedSscFixtures({ t1Years = 3, perYear = 40 } = {}) {
+export async function seedSscFixtures({ t1Years = 3, perYear = 40 } = {}) {
   const items = [];
   for (let i = 0; i < t1Years; i += 1) {
     const year = 2026 - i;
@@ -105,11 +105,11 @@ export function seedSscFixtures({ t1Years = 3, perYear = 40 } = {}) {
       items.push(makeSscQuestion(year, n));
     }
   }
-  return insertMany(items, { source: 'TEST FIXTURE' });
+  return await insertMany(items, { source: 'TEST FIXTURE' });
 }
 
 /** SSC Tier-II Paper-I Session-I style fixtures (Quant/Reasoning/English/GA/Computer). */
-export function seedSscTier2Fixtures({ years = 1, perYear = 60 } = {}) {
+export async function seedSscTier2Fixtures({ years = 1, perYear = 60 } = {}) {
   const subjects = [
     'Mathematical Abilities',
     'Reasoning & General Intelligence',
@@ -143,7 +143,7 @@ export function seedSscTier2Fixtures({ years = 1, perYear = 60 } = {}) {
       });
     }
   }
-  return insertMany(items, { source: 'TEST FIXTURE' });
+  return await insertMany(items, { source: 'TEST FIXTURE' });
 }
 
 export { GS_SUBJECTS, CSAT_SUBJECTS, SSC_T1_SUBJECTS };

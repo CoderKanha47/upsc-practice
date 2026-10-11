@@ -16,9 +16,9 @@ import { insertMany, refreshCoverage } from '../services/questionService.js';
  * Nothing is ever invented: unparseable sources come back as warnings.
  */
 
-function newBatch(filename, format, sourceType, exam = null) {
+async function newBatch(filename, format, sourceType, exam = null) {
   const id = newId('batch');
-  getDb()
+  await getDb()
     .prepare(
       `INSERT INTO import_batches (id, filename, format, source_type, exam, state, created_at)
        VALUES (?, ?, ?, ?, ?, 'IMPORTED', ?)`,
@@ -27,8 +27,8 @@ function newBatch(filename, format, sourceType, exam = null) {
   return id;
 }
 
-function finishBatch(id, patch) {
-  getDb()
+async function finishBatch(id, patch) {
+  await getDb()
     .prepare(
       `UPDATE import_batches SET state = ?, total = ?, inserted = ?, duplicates = ?,
          rejected = ?, needs_review = ?, notes = ? WHERE id = ?`,
@@ -46,7 +46,7 @@ function finishBatch(id, patch) {
   return getDb().prepare('SELECT * FROM import_batches WHERE id = ?').get(id);
 }
 
-export function listBatches(limit = 30) {
+export async function listBatches(limit = 30) {
   return getDb()
     .prepare('SELECT * FROM import_batches ORDER BY created_at DESC LIMIT ?')
     .all(limit);
@@ -55,7 +55,7 @@ export function listBatches(limit = 30) {
 /**
  * Import structured questions (canonical JSON).
  */
-export function importJson({ content, filename = 'upload.json', sourceType = 'OFFICIAL_PYQ', exam = null, tier = null, shift = null }) {
+export async function importJson({ content, filename = 'upload.json', sourceType = 'OFFICIAL_PYQ', exam = null, tier = null, shift = null }) {
   const { meta, questions, answerKey } = parseJsonPayload(content);
   const withKey = applyAnswerKey(questions, answerKey);
   // Request-level exam defaults fill gaps left by the file's own meta.
@@ -65,11 +65,11 @@ export function importJson({ content, filename = 'upload.json', sourceType = 'OF
     tier: q.tier || tier || null,
     shift: q.shift || shift || null,
   }));
-  const batchId = newBatch(filename, 'json', sourceType || meta.source_type, stamped[0]?.exam || exam);
+  const batchId = await newBatch(filename, 'json', sourceType || meta.source_type, stamped[0]?.exam || exam);
 
-  const summary = insertMany(stamped, { batchId, source: meta.source });
+  const summary = await insertMany(stamped, { batchId, source: meta.source });
   const state = summary.inserted === 0 ? 'REVIEW_REQUIRED' : summary.review > 0 ? 'REVIEW_REQUIRED' : 'PARSED';
-  const batch = finishBatch(batchId, {
+  const batch = await finishBatch(batchId, {
     state,
     total: summary.total,
     inserted: summary.inserted,
@@ -82,7 +82,7 @@ export function importJson({ content, filename = 'upload.json', sourceType = 'OF
       meta,
     },
   });
-  refreshCoverage();
+  await refreshCoverage();
   return { batch, summary: { ...summary, answerKeyApplied: withKey.applied }, batchId };
 }
 
@@ -91,7 +91,7 @@ export function importJson({ content, filename = 'upload.json', sourceType = 'OF
  * Questions land as REVIEW_REQUIRED until an answer key is attached and an
  * admin verifies them.
  */
-export function importText({ content, filename = 'paper.txt', year = null, paper = 'GS1', source = null, exam = null, tier = null, shift = null }) {
+export async function importText({ content, filename = 'paper.txt', year = null, paper = 'GS1', source = null, exam = null, tier = null, shift = null }) {
   const parsed = parsePaperText(content, {
     paper,
     year,
@@ -100,10 +100,10 @@ export function importText({ content, filename = 'paper.txt', year = null, paper
     tier,
     shift,
   });
-  const batchId = newBatch(filename, 'text', 'OFFICIAL_PYQ', exam);
-  const summary = insertMany(parsed.questions, { batchId, source: source || filename });
+  const batchId = await newBatch(filename, 'text', 'OFFICIAL_PYQ', exam);
+  const summary = await insertMany(parsed.questions, { batchId, source: source || filename });
   const needsReview = summary.inserted; // text imports always need verification
-  const batch = finishBatch(batchId, {
+  const batch = await finishBatch(batchId, {
     state: parsed.questions.length ? 'REVIEW_REQUIRED' : 'IMPORTED',
     total: parsed.questions.length,
     inserted: summary.inserted,
@@ -112,7 +112,7 @@ export function importText({ content, filename = 'paper.txt', year = null, paper
     needsReview,
     notes: { warnings: parsed.warnings.slice(0, 100), preamble: parsed.preamble.slice(0, 500) },
   });
-  refreshCoverage();
+  await refreshCoverage();
   return { batch, summary: { ...summary, warnings: parsed.warnings }, batchId };
 }
 
@@ -132,7 +132,7 @@ export function parseAnswerKeyText(text) {
  * Attach an official/community answer key to an already-imported paper.
  * Updates correct_answer for matching (year, paper, question_number).
  */
-export function importAnswerKey({ content, year, paper, filename = 'answer-key', shift = null }) {
+export async function importAnswerKey({ content, year, paper, filename = 'answer-key', shift = null }) {
   let answers = {};
   if (typeof content === 'string') {
     const trimmed = content.trim();
@@ -150,7 +150,7 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key',
   }
 
   const db = getDb();
-  const batchId = newBatch(filename, 'answerkey', 'ANSWER_KEY');
+  const batchId = await newBatch(filename, 'answerkey', 'ANSWER_KEY');
   let applied = 0;
   const missing = [];
   const conflicts = [];
@@ -159,7 +159,7 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key',
     const num = Number(numStr);
     const ans = String(ansRaw).toUpperCase().replace(/[().]/g, '').trim();
     if (!Number.isFinite(num) || !/^[A-F]$/.test(ans)) continue;
-    const row = db
+    const row = await db
       .prepare(
         `SELECT id, correct_answer, validation_state, options_json FROM questions
          WHERE year = ? AND paper = ? AND question_number = ? AND is_duplicate = 0
@@ -173,7 +173,7 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key',
     if (row.correct_answer && row.correct_answer !== ans) {
       conflicts.push({ number: num, existing: row.correct_answer, incoming: ans });
     }
-    db.prepare(
+    await db.prepare(
       `UPDATE questions SET correct_answer = ?, updated_at = ?,
          validation_state = CASE WHEN validation_state = 'VERIFIED' THEN 'VERIFIED'
            WHEN validation_state = 'IMPORTED' THEN 'PARSED' ELSE validation_state END
@@ -183,7 +183,7 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key',
     audit('question', row.id, 'answer_key', { correct_answer: row.correct_answer }, { correct_answer: ans }, 'import');
   }
 
-  const batch = finishBatch(batchId, {
+  const batch = await finishBatch(batchId, {
     state: applied ? 'PARSED' : 'REVIEW_REQUIRED',
     total: Object.keys(answers).length,
     inserted: 0,
@@ -192,7 +192,7 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key',
     needsReview: conflicts.length + missing.length,
     notes: { applied, missingNumbers: missing.slice(0, 100), conflicts: conflicts.slice(0, 50), year, paper },
   });
-  refreshCoverage();
+  await refreshCoverage();
   return { batch, applied, missing, conflicts, batchId };
 }
 
@@ -200,7 +200,7 @@ export function importAnswerKey({ content, year, paper, filename = 'answer-key',
 export async function runImport({ format, content, meta = {} }) {
   switch (format) {
     case 'json':
-      return importJson({
+      return await importJson({
         content,
         filename: meta.filename,
         sourceType: meta.sourceType || 'OFFICIAL_PYQ',
@@ -209,7 +209,7 @@ export async function runImport({ format, content, meta = {} }) {
         shift: meta.shift || null,
       });
     case 'text':
-      return importText({
+      return await importText({
         content,
         filename: meta.filename,
         year: meta.year,
@@ -220,7 +220,7 @@ export async function runImport({ format, content, meta = {} }) {
         shift: meta.shift || null,
       });
     case 'answerkey':
-      return importAnswerKey({
+      return await importAnswerKey({
         content,
         year: meta.year,
         paper: meta.paper,

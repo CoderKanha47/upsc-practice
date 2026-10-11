@@ -50,7 +50,7 @@ async function req(path, { method = 'GET', body, token } = {}) {
 }
 
 before(async () => {
-  seedFixtures({ gsYears: 8, csatYears: 4, gsPerYear: 25, csatPerYear: 25 });
+  await seedFixtures({ gsYears: 8, csatYears: 4, gsPerYear: 25, csatPerYear: 25 });
   const app = await createApp();
   await new Promise((resolve) => {
     server = app.listen(0, '127.0.0.1', resolve);

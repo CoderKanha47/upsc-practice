@@ -46,8 +46,8 @@ CREATE TABLE IF NOT EXISTS questions (
   concept                TEXT,
   tags_json              TEXT,
   batch_id               TEXT,
-  created_at             INTEGER NOT NULL,
-  updated_at             INTEGER NOT NULL
+  created_at             BIGINT NOT NULL,
+  updated_at             BIGINT NOT NULL
 );
 
 -- Official PYQs are uniquely identified by year + paper + question number
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
   rejected        INTEGER DEFAULT 0,
   needs_review    INTEGER DEFAULT 0,
   notes           TEXT,
-  created_at      INTEGER NOT NULL
+  created_at      BIGINT NOT NULL
 );
 
 -- One row per (year, paper). Paper ids are globally unique so (year, paper)
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS paper_coverage (
   keyed_count     INTEGER DEFAULT 0,
   source          TEXT,
   notes           TEXT,
-  updated_at      INTEGER NOT NULL,
+  updated_at      BIGINT NOT NULL,
   PRIMARY KEY (year, paper)
 );
 
@@ -117,10 +117,10 @@ CREATE TABLE IF NOT EXISTS test_sessions (
   config_json        TEXT NOT NULL DEFAULT '{}',
   question_ids_json  TEXT NOT NULL DEFAULT '[]',
   seed               TEXT,
-  started_at         INTEGER NOT NULL,
+  started_at         BIGINT NOT NULL,
   duration_seconds   INTEGER NOT NULL,
-  deadline_at        INTEGER NOT NULL,
-  submitted_at       INTEGER,
+  deadline_at        BIGINT NOT NULL,
+  submitted_at       BIGINT,
   attempted          INTEGER DEFAULT 0,
   correct            INTEGER DEFAULT 0,
   incorrect          INTEGER DEFAULT 0,
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
   total_marks        REAL,
   accuracy           REAL DEFAULT 0,
   time_used_seconds  REAL DEFAULT 0,
-  created_at         INTEGER NOT NULL
+  created_at         BIGINT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS ix_sessions_status ON test_sessions (status);
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS session_answers (
   visited             INTEGER NOT NULL DEFAULT 0,
   time_spent_seconds  REAL NOT NULL DEFAULT 0,
   is_correct          INTEGER,
-  updated_at          INTEGER NOT NULL,
+  updated_at          BIGINT NOT NULL,
   PRIMARY KEY (session_id, question_id)
 );
 
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS question_stats (
   correct_count       INTEGER NOT NULL DEFAULT 0,
   incorrect_count     INTEGER NOT NULL DEFAULT 0,
   skipped_count       INTEGER NOT NULL DEFAULT 0,
-  last_attempted_at  INTEGER,
+  last_attempted_at  BIGINT,
   best_time_seconds   REAL,
   average_time_seconds REAL,
   total_time_seconds  REAL NOT NULL DEFAULT 0,
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS question_stats (
 CREATE TABLE IF NOT EXISTS settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at BIGINT NOT NULL
 );
 
 -- ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   before_json TEXT,
   after_json  TEXT,
   actor      TEXT,
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 
 -- ---------------------------------------------------------------------------
@@ -217,9 +217,9 @@ CREATE TABLE IF NOT EXISTS ssc_cycles (
   tier2_marks             REAL,                    -- null for ABSENT (never zero)
   tier2_total_marks       REAL,
   tier2_percent           REAL,
-  finalized_at            INTEGER,
-  created_at              INTEGER NOT NULL,
-  updated_at              INTEGER NOT NULL
+  finalized_at            BIGINT,
+  created_at              BIGINT NOT NULL,
+  updated_at              BIGINT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS ix_ssc_cycles_date ON ssc_cycles (cycle_date);
@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS ssc_cutoff_history (
   source_url          TEXT,
   verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED', -- VERIFIED | UNVERIFIED | MISSING
   notes               TEXT,
-  created_at          INTEGER NOT NULL,
+  created_at          BIGINT NOT NULL,
   UNIQUE (year, category, list)
 );
 
@@ -253,7 +253,7 @@ CREATE TABLE IF NOT EXISTS paper_difficulty (
   difficulty_source TEXT NOT NULL,               -- MANUAL | METADATA
   question_count  INTEGER,
   computed_json   TEXT,
-  created_at      INTEGER NOT NULL
+  created_at      BIGINT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS ix_paper_difficulty_paper ON paper_difficulty (paper_id, cycle_date);

@@ -90,17 +90,17 @@ function buildWhere(filters = {}) {
   return { where: clauses.length ? ` AND ${clauses.join(' AND ')}` : '', params };
 }
 
-export function loadPool(filters = {}, { limit = 0 } = {}) {
+export async function loadPool(filters = {}, { limit = 0 } = {}) {
   const db = getDb();
   const { where, params } = buildWhere(filters);
   const sql = `${BASE_SELECT}${where} ORDER BY year DESC, question_number ASC${limit ? ` LIMIT ${Number(limit)}` : ''}`;
-  return db.prepare(sql).all(...params).map(decorate);
+  return (await db.prepare(sql).all(...params)).map(decorate);
 }
 
-export function countPool(filters = {}) {
+export async function countPool(filters = {}) {
   const db = getDb();
   const { where, params } = buildWhere(filters);
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE is_duplicate = 0${where}`).get(...params);
+  const row = await db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE is_duplicate = 0${where}`).get(...params);
   return row ? Number(row.n) : 0;
 }
 
@@ -116,7 +116,7 @@ function decorate(row) {
 
 /* ------------------------------------------------------------- exact paper */
 /** Reproduce an actual historical paper exactly, in original order. */
-export function pickExactPaper(year, paperId, opts = {}) {
+export async function pickExactPaper(year, paperId, opts = {}) {
   const db = getDb();
   const clauses = ['year = ?', 'paper = ?', 'is_duplicate = 0', "source_type = 'OFFICIAL_PYQ'", "validation_state IN ('PARSED','REVIEW_REQUIRED','VERIFIED')"];
   const params = [Number(year), paperId];
@@ -124,7 +124,7 @@ export function pickExactPaper(year, paperId, opts = {}) {
     clauses.push('shift = ?');
     params.push(opts.shift);
   }
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT id, question_number FROM questions
        WHERE ${clauses.join(' AND ')}
@@ -172,13 +172,13 @@ function difficultyDeficit(selected, cfg = CONFIG) {
  * UPSC-like subject/difficulty/type distribution. Always labelled MIXED PYQ
  * PAPER, never "official UPSC paper".
  */
-export function buildMixedPaper(paperId, count, opts = {}) {
+export async function buildMixedPaper(paperId, count, opts = {}) {
   const cfg = opts.config || CONFIG;
   const seed = opts.seed || randomSeed();
   const rng = makeRng(`${seed}:${paperId}:${count}`);
   const years = opts.years || rangeYearsFor(paperId);
 
-  const pool = loadPool({
+  const pool = await loadPool({
     paper: paperId,
     years,
     sourceTypes: ['OFFICIAL_PYQ'],
@@ -329,11 +329,11 @@ export function distributionReport(questions) {
  * SELECTIVE PRACTICE — always unlocked, any day, unlimited attempts.
  * Linked questions (shared passage/group) are kept together as a unit.
  */
-export function buildSelectiveSet(filters, count, opts = {}) {
+export async function buildSelectiveSet(filters, count, opts = {}) {
   const seed = opts.seed || randomSeed();
   const rng = makeRng(`${seed}:${JSON.stringify(filters)}:${count}`);
 
-  let pool = loadPool(filters);
+  let pool = await loadPool(filters);
   if (!pool.length) {
     const err = new Error('No questions match these filters yet.');
     err.status = 409;
