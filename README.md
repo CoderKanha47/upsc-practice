@@ -56,18 +56,24 @@ Default admin token: `local-admin-token` (override with env `ADMIN_TOKEN`).
 ### Deploy to the web (phone + all devices)
 
 The app is a long-running Node server with a SQLite file, so it deploys to a
-host with a persistent disk (Render, Railway, Fly.io) — not Vercel, whose
-serverless filesystem is read-only. `render.yaml` is included.
+host like Render or Railway — not Vercel, whose serverless filesystem is
+read-only. `render.yaml` is included.
 
-**Render (free tier works):**
+**Render (free tier):**
 
 1. Push this repo to GitHub.
 2. In the Render dashboard → **New → Blueprint** → pick the repo. It reads
-   `render.yaml` and creates the service + a persistent disk mounted at `/data`.
+   `render.yaml` and creates the service.
 3. After the first deploy, open the app URL. `ADMIN_TOKEN` is generated for you
    — copy it from the service's **Environment** tab into the Admin login.
-4. Your practice data lives in `/data/upsc.db` on the disk, so it survives
-   redeploys and restarts.
+4. The built-in practice questions are seeded at build time, so the app is
+   usable immediately.
+
+> **Free tier has no persistent disk**, so the SQLite file lives on the
+> container's ephemeral filesystem: **your scores, cycles and imported
+> questions reset on every redeploy or restart.** Fine for trying it out. To
+> keep data, upgrade to a paid plan (which supports a mounted disk) or run it
+> on Railway/Fly with a volume and set `DB_FILE` to a path on that volume.
 
 The same repo works on Railway/Fly: set `HOST=0.0.0.0`, `DB_FILE` to a path on
 a mounted volume, and run `npm start`.
