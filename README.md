@@ -53,6 +53,25 @@ npm test            # full test suite (78 tests)
 
 Default admin token: `local-admin-token` (override with env `ADMIN_TOKEN`).
 
+### Deploy to the web (phone + all devices)
+
+The app is a long-running Node server with a SQLite file, so it deploys to a
+host with a persistent disk (Render, Railway, Fly.io) — not Vercel, whose
+serverless filesystem is read-only. `render.yaml` is included.
+
+**Render (free tier works):**
+
+1. Push this repo to GitHub.
+2. In the Render dashboard → **New → Blueprint** → pick the repo. It reads
+   `render.yaml` and creates the service + a persistent disk mounted at `/data`.
+3. After the first deploy, open the app URL. `ADMIN_TOKEN` is generated for you
+   — copy it from the service's **Environment** tab into the Admin login.
+4. Your practice data lives in `/data/upsc.db` on the disk, so it survives
+   redeploys and restarts.
+
+The same repo works on Railway/Fly: set `HOST=0.0.0.0`, `DB_FILE` to a path on
+a mounted volume, and run `npm start`.
+
 ---
 
 ## 3. How the app works (user guide)

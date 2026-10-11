@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: upsc-practice
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: HOST
+        value: "0.0.0.0"
+      - key: DB_FILE
+        value: "/data/upsc.db"
+      - key: ADMIN_TOKEN
+        generateValue: true
+    disk:
+      name: upsc-data
+      mountPath: /data
+      sizeGB: 1
