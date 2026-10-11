@@ -1,4 +1,4 @@
-import { getDb, now, tx, toJson, parseJson } from '../db/database.js';
+import { getDb, now, tx, toJson, parseJson, isUniqueViolation } from '../db/database.js';
 import { zonedToEpoch } from './availability.js';
 import { getSscConfig } from './sscConfig.js';
 import { computeCutoff, resolveBaseline, metadataDifficulty } from './cutoff.js';
@@ -197,7 +197,7 @@ export function ensureCycle(dateKey = cycleDateKey(), { difficulty = null, force
         tier2EligibleInitially, at, at,
       );
   } catch (err) {
-    if (String(err?.message || '').includes('UNIQUE')) {
+    if (isUniqueViolation(err)) {
       // Another caller won the race — reuse their persisted cutoff.
       return getCycleByDate(dateKey);
     }

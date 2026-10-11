@@ -16,6 +16,7 @@
   "type": "module",
   "dependencies": {
     "express": "^5.2.1",
-    "pdfjs-dist": "^5.7.284"
+    "pdfjs-dist": "^5.7.284",
+    "pg": "^8.23.1"
   }
 }

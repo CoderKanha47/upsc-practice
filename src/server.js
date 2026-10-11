@@ -2,7 +2,8 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import CONFIG from '../config/exam.config.js';
-import { getDb } from './db/database.js';
+import { getDb, usingPostgres, getPool } from './db/database.js';
+import { withDbClient } from './db/context.js';
 import apiRouter from './routes/api.js';
 import adminRouter from './routes/admin.js';
 import { seedHistoricalCutoffs } from './services/cutoff.js';
@@ -11,13 +12,21 @@ import { finalizeExpiredCycles } from './services/sscCycle.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
-export function createApp() {
-  getDb(); // ensure schema exists
+/** Publish a pooled Postgres client for the life of each request. */
+async function dbMiddleware(req, res, next) {
+  if (!usingPostgres) return next();
+  const pool = await getPool();
+  return withDbClient(pool)(req, res, next);
+}
+
+export async function createApp() {
+  await getDb(); // ensure schema exists
 
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '10mb' }));
   app.use(express.text({ type: 'text/plain', limit: '20mb' }));
+  app.use((req, res, next) => dbMiddleware(req, res, next));
 
   app.get('/api/health', (req, res) =>
     res.json({ ok: true, app: CONFIG.APP.NAME, now: new Date().toISOString() }),
@@ -44,8 +53,8 @@ export function createApp() {
   return app;
 }
 
-export function startServer() {
-  const app = createApp();
+export async function startServer() {
+  const app = await createApp();
 
   // Reference cutoffs are seeded before the first request so the admin
   // dashboard never shows a half-empty table.
